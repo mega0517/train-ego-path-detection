@@ -58,6 +58,9 @@ class IoUEvaluator:
         for _ in range(self.detector.config["test_iterations"]):
             for i in range(len(self.dataset)):
                 img, target = self.dataset[i]
+                # test images are independent; reset the temporal history so each
+                # frame is evaluated as a static scene rather than carrying over.
+                self.detector.reset_temporal()
                 pred = self.detector.detect(img)
                 if self.detector.config["method"] in ["classification", "regression"]:
                     pred = rails_to_mask(pred, img.size)
@@ -84,9 +87,15 @@ class LatencyEvaluator:
         self.device = torch.device(device)
 
     def evaluate_pytorch(self, runs):
-        dummy_input = torch.rand(
-            (1, *self.detector.config["input_shape"]), device=self.device
-        )
+        if self.detector.temporal:  # temporal model expects a (B, T, C, H, W) input
+            dummy_input = torch.rand(
+                (1, self.detector.config["seq_len"], *self.detector.config["input_shape"]),
+                device=self.device,
+            )
+        else:
+            dummy_input = torch.rand(
+                (1, *self.detector.config["input_shape"]), device=self.device
+            )
         for _ in range(runs // 10):  # warmup
             self.detector.model(dummy_input)
         timer = Timer(

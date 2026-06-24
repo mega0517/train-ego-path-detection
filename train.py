@@ -15,13 +15,26 @@ from src.nn.loss import (
     CrossEntropyLoss,
     TrainEgoPathRegressionLoss,
 )
-from src.nn.model import ClassificationNet, RegressionNet, SegmentationNet
+from src.nn.model import (
+    ClassificationNet,
+    ClassificationNetRNN,
+    RegressionNet,
+    RegressionNetRNN,
+    SegmentationNet,
+    SegmentationNetRNN,
+)
 from src.utils.common import set_seeds, set_worker_seeds, simple_logger, split_dataset
-from src.utils.dataset import PathsDataset
+from src.utils.dataset import PathsDataset, SequencePathsDataset, gpu_collate_fn
 from src.utils.evaluate import IoUEvaluator
+from src.utils.gpu_transforms import GpuPreprocess
 from src.utils.trainer import train
 
-torch.use_deterministic_algorithms(True)
+# Speed-optimized run: trade bit-exact reproducibility for throughput. Seeds are
+# still set, but kernels may be nondeterministic and cudnn auto-tunes algorithms.
+torch.use_deterministic_algorithms(False)
+torch.set_float32_matmul_precision("high")
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True
 
 
 def parse_arguments():
@@ -47,7 +60,35 @@ def parse_arguments():
         + [f"cuda:{x}" for x in range(torch.cuda.device_count())],
         help="Device to use ('cpu', 'cuda', 'cuda:x' or 'mps').",
     )
+    parser.add_argument(
+        "--temporal",
+        action="store_true",
+        help="Train the temporal RNN variant that tracks the ego-path over a sequence of frames.",
+    )
+    parser.add_argument(
+        "--base-model",
+        type=str,
+        default=None,
+        help="Name of the trained per-frame model in weights/ to build the temporal model on (required with --temporal). The temporal model is saved as '<base-model>RNN'.",
+    )
+    parser.add_argument(
+        "--finetune-base",
+        action="store_true",
+        help="With --temporal, also fine-tune the base per-frame weights instead of only training the RNN (base is frozen by default).",
+    )
+    parser.add_argument(
+        "--gpu-preprocess",
+        action="store_true",
+        help="Offload JPEG decode/crop/resize/jitter/flip to the GPU (temporal training only). Dataloader workers only read raw file bytes, freeing CPU cores.",
+    )
     return parser.parse_args()
+
+
+def load_base_weights(base_net, ckpt_path, device):
+    """Loads per-frame weights into a base net, stripping any torch.compile prefix."""
+    state = torch.load(ckpt_path, map_location=device)
+    state = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
+    base_net.load_state_dict(state)
 
 
 def main(args):
@@ -58,6 +99,26 @@ def main(args):
 
     with open(os.path.join(base_path, "configs", "global.yaml")) as f:
         global_config = yaml.safe_load(f)
+
+    # A temporal model wraps a specific trained base, so its method and architecture
+    # are dictated by that base; the CLI method/backbone are then ignored.
+    base_config = None
+    if args.temporal:
+        if args.base_model is None:
+            raise ValueError("--base-model is required with --temporal")
+        base_cfg_path = os.path.join(
+            base_path, "egopath", "weights", args.base_model, "config.yaml"
+        )
+        with open(base_cfg_path) as f:
+            base_config = yaml.safe_load(f)
+        method = base_config["method"]
+        if args.method != method or args.backbone != base_config["backbone"]:
+            logger.info(
+                f"\n[temporal] Inheriting base architecture from {args.base_model} "
+                f"(method={method}, backbone={base_config['backbone']}); "
+                f"CLI method/backbone are ignored."
+            )
+
     with open(os.path.join(base_path, "configs", f"{method}.yaml")) as f:
         method_config = yaml.safe_load(f)
     config = {
@@ -66,6 +127,26 @@ def main(args):
         "method": method,
         "backbone": args.backbone,
     }
+    if args.temporal:
+        # training/data/augmentation knobs come from the current config files;
+        # the model architecture is taken from the base model so its weights load.
+        for key in (
+            "backbone", "input_shape", "anchors", "pool_channels",
+            "fc_hidden_size", "classes", "decoder_channels",
+        ):
+            if key in base_config:
+                config[key] = base_config[key]
+        config["temporal"] = True
+        config["base_model"] = args.base_model
+        config["freeze_base"] = not args.finetune_base
+
+    # GPU-side preprocessing is only wired for the temporal (sequence) dataset.
+    config["gpu_preprocess"] = bool(args.gpu_preprocess) and args.temporal
+    if args.gpu_preprocess and not args.temporal:
+        logger.info(
+            "\n[gpu-preprocess] --gpu-preprocess only applies to --temporal training; "
+            "ignoring for the per-frame run."
+        )
 
     set_seeds(config["seed"])  # set random state
     with open(config["annotations_path"]) as json_file:
@@ -75,7 +156,13 @@ def main(args):
     train_indices, val_indices, test_indices = split_dataset(indices, proportions)
     set_seeds(config["seed"])  # reset random state
 
-    train_dataset = PathsDataset(
+    dataset_cls = SequencePathsDataset if args.temporal else PathsDataset
+    seq_kwargs = (
+        {"seq_len": config["seq_len"], "seq_jitter": config["seq_jitter"]}
+        if args.temporal
+        else {}
+    )
+    train_dataset = dataset_cls(
         imgs_path=config["images_path"],
         annotations_path=config["annotations_path"],
         indices=train_indices,
@@ -83,9 +170,10 @@ def main(args):
         method=method,
         img_aug=True,
         to_tensor=True,
+        **seq_kwargs,
     )
     val_dataset = (
-        PathsDataset(
+        dataset_cls(
             imgs_path=config["images_path"],
             annotations_path=config["annotations_path"],
             indices=val_indices,
@@ -93,70 +181,144 @@ def main(args):
             method=method,
             img_aug=True,
             to_tensor=True,
+            **seq_kwargs,
         )
         if len(val_indices) > 0
         else None
     )
+    # With gpu_preprocess on, workers yield variable-length raw JPEG byte tensors
+    # which the default collate cannot stack; pin_memory is also unhelpful for the
+    # ragged byte list, so it is disabled on that path.
+    gpu_preprocess = config.get("gpu_preprocess", False)
+    if gpu_preprocess:
+        # Passing many raw-byte tensors across workers exhausts the default
+        # file_descriptor IPC strategy ("Bad file descriptor"); file_system shares
+        # via temp files and handles the ragged byte payloads reliably.
+        torch.multiprocessing.set_sharing_strategy("file_system")
+    collate_fn = gpu_collate_fn if gpu_preprocess else None
+    pin_memory = not gpu_preprocess
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=config["batch_size"],
         shuffle=True,
         num_workers=config["workers"],
-        pin_memory=True,
+        pin_memory=pin_memory,
+        persistent_workers=config["workers"] > 0,
+        prefetch_factor=4 if config["workers"] > 0 else None,
         worker_init_fn=set_worker_seeds,
         generator=torch.Generator().manual_seed(config["seed"]),
+        collate_fn=collate_fn,
     )
     val_loader = (
         torch.utils.data.DataLoader(
             val_dataset,
             batch_size=config["batch_size"],
             num_workers=config["workers"],
-            pin_memory=True,
+            pin_memory=pin_memory,
+            persistent_workers=config["workers"] > 0,
+            prefetch_factor=4 if config["workers"] > 0 else None,
             worker_init_fn=set_worker_seeds,
             generator=torch.Generator().manual_seed(config["seed"]),
+            collate_fn=collate_fn,
         )
         if val_dataset is not None
         else None
     )
 
     if method == "regression":
-        model = RegressionNet(
-            backbone=config["backbone"],
-            input_shape=tuple(config["input_shape"]),
-            anchors=config["anchors"],
-            pool_channels=config["pool_channels"],
-            fc_hidden_size=config["fc_hidden_size"],
-            pretrained=config["pretrained"],
-        ).to(device)
+        if args.temporal:
+            model = RegressionNetRNN(
+                backbone=config["backbone"],
+                input_shape=tuple(config["input_shape"]),
+                anchors=config["anchors"],
+                pool_channels=config["pool_channels"],
+                fc_hidden_size=config["fc_hidden_size"],
+                seq_len=config["seq_len"],
+                rnn_hidden=config["rnn_hidden"],
+                rnn_layers=config["rnn_layers"],
+            ).to(device)
+        else:
+            model = RegressionNet(
+                backbone=config["backbone"],
+                input_shape=tuple(config["input_shape"]),
+                anchors=config["anchors"],
+                pool_channels=config["pool_channels"],
+                fc_hidden_size=config["fc_hidden_size"],
+                pretrained=config["pretrained"],
+            ).to(device)
     elif method == "classification":
-        model = ClassificationNet(
-            backbone=config["backbone"],
-            input_shape=tuple(config["input_shape"]),
-            anchors=config["anchors"],
-            classes=config["classes"],
-            pool_channels=config["pool_channels"],
-            fc_hidden_size=config["fc_hidden_size"],
-            pretrained=config["pretrained"],
-        ).to(device)
+        if args.temporal:
+            model = ClassificationNetRNN(
+                backbone=config["backbone"],
+                input_shape=tuple(config["input_shape"]),
+                anchors=config["anchors"],
+                classes=config["classes"],
+                pool_channels=config["pool_channels"],
+                fc_hidden_size=config["fc_hidden_size"],
+                seq_len=config["seq_len"],
+                rnn_hidden=config["rnn_hidden"],
+                rnn_layers=config["rnn_layers"],
+            ).to(device)
+        else:
+            model = ClassificationNet(
+                backbone=config["backbone"],
+                input_shape=tuple(config["input_shape"]),
+                anchors=config["anchors"],
+                classes=config["classes"],
+                pool_channels=config["pool_channels"],
+                fc_hidden_size=config["fc_hidden_size"],
+                pretrained=config["pretrained"],
+            ).to(device)
     elif method == "segmentation":
-        model = SegmentationNet(
-            backbone=config["backbone"],
-            decoder_channels=tuple(config["decoder_channels"]),
-            pretrained=config["pretrained"],
-        ).to(device)
+        if args.temporal:
+            model = SegmentationNetRNN(
+                backbone=config["backbone"],
+                decoder_channels=tuple(config["decoder_channels"]),
+                seq_len=config["seq_len"],
+                rnn_hidden=config["seg_rnn_hidden"],
+                rnn_layers=config["rnn_layers"],
+            ).to(device)
+        else:
+            model = SegmentationNet(
+                backbone=config["backbone"],
+                decoder_channels=tuple(config["decoder_channels"]),
+                pretrained=config["pretrained"],
+            ).to(device)
     else:
         raise ValueError
+
+    if args.temporal:
+        base_ckpt = os.path.join(
+            base_path, "egopath", "weights", args.base_model, "best.pt"
+        )
+        load_base_weights(model.base, base_ckpt, device)
+        logger.info(f"\nLoaded base per-frame weights from {base_ckpt}")
+        if config["freeze_base"]:
+            for param in model.base.parameters():
+                param.requires_grad = False
+            model.base.eval()
     try:
         model = torch.compile(model)
     except Exception as e:
         print(f"torch.compile failed: {e}. Running model without compilation.")
 
+    # Run W&B offline by default so no account/login is required. Set
+    # WANDB_MODE=online (and log in) to sync to the cloud dashboard instead.
+    os.environ.setdefault("WANDB_MODE", "offline")
     wandb.init(
         project="train-ego-path-detection",
         config=config,
         dir=os.path.join(base_path),
+        mode=os.environ["WANDB_MODE"],
     )
-    save_path = os.path.join(base_path, "weights", wandb.run.name)
+    if args.temporal:
+        save_path = os.path.join(
+            base_path, "egopathrnn", "weights", f"{args.base_model}RNN"
+        )
+    else:
+        run_name = wandb.run.name or wandb.run.id or f"{method}-{args.backbone}"
+        save_path = os.path.join(base_path, "weights", run_name)
+    logger.info(f"\nSaving model to {save_path}")
     os.makedirs(save_path, exist_ok=True)
     with open(os.path.join(save_path, "config.yaml"), "w") as f:
         yaml.dump(config, f)
@@ -178,18 +340,24 @@ def main(args):
     elif method == "segmentation":
         criterion = BinaryDiceLoss()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=config["learning_rate"],
+    )
     scheduler = (
         torch.optim.lr_scheduler.OneCycleLR(
             optimizer=optimizer,
             max_lr=config["learning_rate"],
             total_steps=config["epochs"],
             pct_start=0.1,
-            verbose=False,
         )
         if config["scheduler"] == "one_cycle"
         else None
     )
+
+    preprocess = GpuPreprocess(config, device) if gpu_preprocess else None
+    if gpu_preprocess:
+        logger.info("\n[gpu-preprocess] GPU-side decode/crop/resize/jitter/flip enabled.")
 
     logger.info(f"\nTraining {method} model for {config['epochs']} epochs...")
     train(
@@ -203,6 +371,7 @@ def main(args):
         device=device,
         logger=logger,
         val_iterations=config["val_iterations"],
+        preprocess=preprocess,
     )
 
     if len(test_indices) > 0:
@@ -226,6 +395,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    wandb.login()
     args = parse_arguments()
     main(args)

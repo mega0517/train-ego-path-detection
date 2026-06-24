@@ -11,6 +11,9 @@ wandb
 # requirements for video inference
 opencv-python
 
+# requirements for GUI application
+PyQt5
+
 # requirements for TensorRT usage
 onnx
 onnxruntime

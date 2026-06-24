@@ -1,5 +1,6 @@
 import importlib
 import os
+from collections import deque
 
 import numpy as np
 import torch
@@ -7,7 +8,14 @@ import yaml
 from PIL import Image
 from torchvision.transforms import v2 as transforms
 
-from ..nn.model import ClassificationNet, RegressionNet, SegmentationNet
+from ..nn.model import (
+    ClassificationNet,
+    ClassificationNetRNN,
+    RegressionNet,
+    RegressionNetRNN,
+    SegmentationNet,
+    SegmentationNetRNN,
+)
 from .autocrop import Autocropper
 from .common import to_scaled_tensor
 from .postprocessing import (
@@ -36,6 +44,10 @@ class Detector:
         self.device = torch.device(device)
         with open(os.path.join(self.model_path, "config.yaml")) as f:
             self.config = yaml.safe_load(f)
+        self.temporal = self.config.get("temporal", False)
+        if self.temporal:
+            self.seq_len = self.config["seq_len"]
+            self.path_buffer = deque(maxlen=self.seq_len)
         if isinstance(crop_coords, tuple) and len(crop_coords) == 4:
             self.crop_coords = crop_coords
         elif crop_coords == "auto":
@@ -74,7 +86,9 @@ class Detector:
         )
 
     def init_model_pytorch(self):
-        if self.config["method"] == "classification":
+        if self.temporal:
+            model = self.init_temporal_model_pytorch()
+        elif self.config["method"] == "classification":
             model = ClassificationNet(
                 backbone=self.config["backbone"],
                 input_shape=tuple(self.config["input_shape"]),
@@ -97,12 +111,50 @@ class Detector:
                 decoder_channels=tuple(self.config["decoder_channels"]),
             )
         model.to(self.device).eval()
-        model.load_state_dict(
-            torch.load(
-                os.path.join(self.model_path, "best.pt"), map_location=self.device
-            )
+        state = torch.load(
+            os.path.join(self.model_path, "best.pt"), map_location=self.device
         )
+        state = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
+        model.load_state_dict(state)
         return model
+
+    def init_temporal_model_pytorch(self):
+        if self.config["method"] == "classification":
+            return ClassificationNetRNN(
+                backbone=self.config["backbone"],
+                input_shape=tuple(self.config["input_shape"]),
+                anchors=self.config["anchors"],
+                classes=self.config["classes"],
+                pool_channels=self.config["pool_channels"],
+                fc_hidden_size=self.config["fc_hidden_size"],
+                seq_len=self.config["seq_len"],
+                rnn_hidden=self.config["rnn_hidden"],
+                rnn_layers=self.config["rnn_layers"],
+            )
+        elif self.config["method"] == "regression":
+            return RegressionNetRNN(
+                backbone=self.config["backbone"],
+                input_shape=tuple(self.config["input_shape"]),
+                anchors=self.config["anchors"],
+                pool_channels=self.config["pool_channels"],
+                fc_hidden_size=self.config["fc_hidden_size"],
+                seq_len=self.config["seq_len"],
+                rnn_hidden=self.config["rnn_hidden"],
+                rnn_layers=self.config["rnn_layers"],
+            )
+        elif self.config["method"] == "segmentation":
+            return SegmentationNetRNN(
+                backbone=self.config["backbone"],
+                decoder_channels=tuple(self.config["decoder_channels"]),
+                seq_len=self.config["seq_len"],
+                rnn_hidden=self.config["seg_rnn_hidden"],
+                rnn_layers=self.config["rnn_layers"],
+            )
+
+    def reset_temporal(self):
+        """Clears the stored ego-path history (call between independent sequences/images)."""
+        if self.temporal:
+            self.path_buffer.clear()
 
     def init_model_tensorrt(self):
         runtime = self.trt.Runtime(self.trt.Logger(self.trt.Logger.ERROR))
@@ -144,6 +196,21 @@ class Detector:
             pred = self.model(tensor)
         return pred.cpu().numpy()
 
+    def infer_temporal_pytorch(self, img):
+        """Runs the per-frame base net, stores its output, and refines from the last seq_len frames."""
+        tensor = to_scaled_tensor(img).unsqueeze(0).to(self.device)
+        tensor = transforms.Resize(self.config["input_shape"][1:][::-1])(tensor)
+        with torch.inference_mode():
+            base_out = self.model.base_forward(tensor)
+        self.path_buffer.append(base_out)
+        seq = list(self.path_buffer)
+        while len(seq) < self.seq_len:  # left-pad with the oldest frame until full
+            seq.insert(0, seq[0])
+        base_seq = torch.stack(seq, dim=1)  # (1, T, ...)
+        with torch.inference_mode():
+            pred = self.model.refine(base_seq)
+        return pred.cpu().numpy()
+
     def infer_model_tensorrt(self, img):
         tensor = transforms.Compose(
             [
@@ -176,7 +243,11 @@ class Detector:
             img = img.crop((xleft, ytop, xright + 1, ybottom + 1))
 
         if self.runtime == "pytorch":
-            pred = self.infer_model_pytorch(img)
+            pred = (
+                self.infer_temporal_pytorch(img)
+                if self.temporal
+                else self.infer_model_pytorch(img)
+            )
         elif self.runtime == "tensorrt":
             pred = self.infer_model_tensorrt(img)
 
