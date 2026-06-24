@@ -1,4 +1,7 @@
 weights/
+# Keep the egopathrnn model checkpoint (tracked via git-lfs)
+!egopathrnn/weights/
+!egopathrnn/weights/**
 output/
 wandb/
 
