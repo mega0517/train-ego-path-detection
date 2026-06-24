@@ -5,3 +5,19 @@ wandb/
 **/__pycache__
 **/.DS_Store
 .vscode/
+
+# Python virtual environment
+.venv/
+venv/
+
+# OMC operational state (committable skills under .omc/skills/** are excepted below)
+.omc/
+!.omc/skills/
+!.omc/skills/**
+
+# Runtime logs / pids / scratch
+*.pid
+train_restart.log
+train_restart.log.*
+train_restart.*.log
+_workspace/
