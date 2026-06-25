@@ -198,6 +198,12 @@ class Detector:
 
     def infer_temporal_pytorch(self, img):
         """Runs the per-frame base net, stores its output, and refines from the last seq_len frames."""
+        _, refined = self.infer_temporal_pair_pytorch(img)
+        return refined
+
+    def infer_temporal_pair_pytorch(self, img):
+        """Like infer_temporal_pytorch but returns both the per-frame base output
+        and the temporally-refined output as (base_pred, refined_pred) numpy arrays."""
         tensor = to_scaled_tensor(img).unsqueeze(0).to(self.device)
         tensor = transforms.Resize(self.config["input_shape"][1:][::-1])(tensor)
         with torch.inference_mode():
@@ -208,8 +214,8 @@ class Detector:
             seq.insert(0, seq[0])
         base_seq = torch.stack(seq, dim=1)  # (1, T, ...)
         with torch.inference_mode():
-            pred = self.model.refine(base_seq)
-        return pred.cpu().numpy()
+            refined = self.model.refine(base_seq)
+        return base_out.cpu().numpy(), refined.cpu().numpy()
 
     def infer_model_tensorrt(self, img):
         tensor = transforms.Compose(
@@ -251,27 +257,60 @@ class Detector:
         elif self.runtime == "tensorrt":
             pred = self.infer_model_tensorrt(img)
 
+        res = self.pred_to_result(pred, crop_coords, original_shape)
+
+        if isinstance(self.crop_coords, Autocropper):
+            self.crop_coords.update(original_shape, res)
+
+        return res
+
+    def pred_to_result(self, pred, crop_coords, original_shape):
+        """Decode a raw model prediction into the method-specific ego-path result."""
         if self.config["method"] == "classification":
             clf = pred.reshape(2, self.config["anchors"], self.config["classes"] + 1)
             clf = np.argmax(clf, axis=2)
             rails = classifications_to_rails(clf, self.config["classes"])
             rails = scale_rails(rails, crop_coords, original_shape)
             rails = np.round(rails).astype(int)
-            res = rails.tolist()
+            return rails.tolist()
         elif self.config["method"] == "regression":
             traj = pred[:, :-1].reshape(2, self.config["anchors"])
             ylim = 1 / (1 + np.exp(-pred[:, -1].item()))  # sigmoid
             rails = regression_to_rails(traj, ylim)
             rails = scale_rails(rails, crop_coords, original_shape)
             rails = np.round(rails).astype(int)
-            res = rails.tolist()
+            return rails.tolist()
         elif self.config["method"] == "segmentation":
             mask = pred.squeeze(0).squeeze(0)
             mask = (mask > 0).astype(np.uint8) * 255
             mask = Image.fromarray(mask)
-            res = scale_mask(mask, crop_coords, original_shape)
+            return scale_mask(mask, crop_coords, original_shape)
+
+    def detect_pair(self, img):
+        """Detect the ego-path with both the per-frame base net and the temporal RNN.
+
+        Only valid for temporal (RNN) PyTorch models: returns
+        (single_frame_result, rnn_result), where the single-frame result is the
+        embedded base network's per-frame prediction (no temporal context) and
+        the RNN result is the temporally-refined prediction. Computed in a single
+        forward pass so the base features are shared. For a non-temporal model,
+        returns (detect(img), None).
+        """
+        if not self.temporal or self.runtime != "pytorch":
+            return self.detect(img), None
+
+        original_shape = img.size
+        crop_coords = self.get_crop_coords()
+        cropped = img
+        if crop_coords is not None:
+            xleft, ytop, xright, ybottom = crop_coords
+            cropped = img.crop((xleft, ytop, xright + 1, ybottom + 1))
+
+        base_pred, refined_pred = self.infer_temporal_pair_pytorch(cropped)
+        single_res = self.pred_to_result(base_pred, crop_coords, original_shape)
+        rnn_res = self.pred_to_result(refined_pred, crop_coords, original_shape)
 
         if isinstance(self.crop_coords, Autocropper):
-            self.crop_coords.update(original_shape, res)
+            self.crop_coords.update(original_shape, rnn_res)
 
-        return res
+        return single_res, rnn_res

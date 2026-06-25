@@ -10,7 +10,7 @@ import sys
 import torch
 import yaml
 from PIL import Image
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings
 from PyQt5.QtGui import QImage, QPixmap, QFont
 from PyQt5.QtWidgets import (
     QApplication,
@@ -32,10 +32,28 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QProgressBar,
     QSplitter,
+    QFileIconProvider,
 )
 
 from src.utils.interface import Detector
 from src.utils.visualization import draw_egopath
+
+
+class FastFolderIconProvider(QFileIconProvider):
+    """Icon provider that skips per-file mime-type resolution.
+
+    The non-native QFileDialog otherwise resolves an icon for every entry on the
+    UI thread (mime detection per file), which is the main slowdown in folders
+    with many files. Since the folder dialog only shows directories, returning a
+    single cached folder icon for everything keeps it fast without looking empty.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._folder_icon = super().icon(QFileIconProvider.Folder)
+
+    def icon(self, _):  # handles both the IconType and QFileInfo overloads
+        return self._folder_icon
 
 
 class InferenceWorker(QThread):
@@ -45,9 +63,17 @@ class InferenceWorker(QThread):
     result_ready = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, detector, input_path=None, input_paths=None, is_video=False):
+    def __init__(
+        self,
+        detector_single=None,
+        detector_rnn=None,
+        input_path=None,
+        input_paths=None,
+        is_video=False,
+    ):
         super().__init__()
-        self.detector = detector
+        self.detector_single = detector_single
+        self.detector_rnn = detector_rnn
         self.input_path = input_path
         self.input_paths = input_paths
         self.is_video = is_video
@@ -68,19 +94,49 @@ class InferenceWorker(QThread):
         except Exception as e:
             self.error_occurred.emit(f"Inference error: {str(e)}")
 
+    def run_both(self, img):
+        """Run both checkpoints and return (single_frame_vis, rnn_vis).
+
+        Each panel comes from its own model: the single-frame visualization from
+        the standalone single-frame checkpoint and the RNN visualization from the
+        temporal checkpoint. If no standalone single-frame model is loaded but the
+        RNN is, the single-frame panel falls back to the RNN's embedded base net
+        (via detect_pair) so the comparison is still populated.
+        """
+        single_vis = None
+        rnn_vis = None
+
+        if self.detector_single is not None:
+            crop_s = self.detector_single.get_crop_coords()
+            single_vis = draw_egopath(
+                img, self.detector_single.detect(img), crop_coords=crop_s
+            )
+            if self.detector_rnn is not None:
+                crop_r = self.detector_rnn.get_crop_coords()
+                rnn_vis = draw_egopath(
+                    img, self.detector_rnn.detect(img), crop_coords=crop_r
+                )
+        elif self.detector_rnn is not None:
+            # No standalone single-frame model: derive it from the RNN's base net.
+            crop_r = self.detector_rnn.get_crop_coords()
+            single_res, rnn_res = self.detector_rnn.detect_pair(img)
+            single_vis = draw_egopath(img, single_res, crop_coords=crop_r)
+            if rnn_res is not None:
+                rnn_vis = draw_egopath(img, rnn_res, crop_coords=crop_r)
+
+        return single_vis, rnn_vis
+
     def process_image(self):
         """Process a single image."""
         try:
             img = Image.open(self.input_path)
-            result = self.detector.detect(img)
-            crop_coords = self.detector.get_crop_coords()
-            vis = draw_egopath(img, result, crop_coords=crop_coords)
+            single_vis, rnn_vis = self.run_both(img)
             self.result_ready.emit(
                 {
                     "type": "image",
-                    "image": vis,
                     "original": img,
-                    "result": result,
+                    "single_image": single_vis,
+                    "rnn_image": rnn_vis,
                 }
             )
         except Exception as e:
@@ -103,17 +159,16 @@ class InferenceWorker(QThread):
                     break
 
                 frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                result = self.detector.detect(frame)
-                crop_coords = self.detector.get_crop_coords()
-                vis = draw_egopath(frame, result, crop_coords=crop_coords)
+                single_vis, rnn_vis = self.run_both(frame)
 
                 self.result_ready.emit(
                     {
                         "type": "video_frame",
                         "frame_num": frame_count,
                         "total_frames": total_frames,
-                        "image": vis,
-                        "result": result,
+                        "original": frame,
+                        "single_image": single_vis,
+                        "rnn_image": rnn_vis,
                     }
                 )
 
@@ -131,18 +186,17 @@ class InferenceWorker(QThread):
                 if self._stop_requested:
                     break
                 img = Image.open(image_path)
-                result = self.detector.detect(img)
-                crop_coords = self.detector.get_crop_coords()
-                vis = draw_egopath(img, result, crop_coords=crop_coords)
+                single_vis, rnn_vis = self.run_both(img)
 
                 self.result_ready.emit(
                     {
                         "type": "folder_image",
                         "index": idx,
                         "total": total_files,
-                        "image": vis,
                         "input_path": image_path,
-                        "result": result,
+                        "original": img,
+                        "single_image": single_vis,
+                        "rnn_image": rnn_vis,
                     }
                 )
         except Exception as e:
@@ -156,12 +210,15 @@ class TEPNetGUI(QMainWindow):
         super().__init__()
         self.setWindowTitle("TEP-Net Train Ego-Path Detection")
         self.setMinimumSize(1024, 700)
-        self.resize(3200, 2000)
 
         self.base_path = os.path.dirname(__file__)
+        self.settings = QSettings("TEP-Net", "TEPNetGUI")
+        # Reused by the folder dialog; held as an attribute so it isn't GC'd.
+        self._folder_icon_provider = FastFolderIconProvider()
         self.detector = None
         self.current_image = None
-        self.last_result_image = None
+        self.last_single_image = None
+        self.last_rnn_image = None
         self.inference_worker = None
         self.custom_model_path = None
         self.selected_model = None
@@ -181,10 +238,31 @@ class TEPNetGUI(QMainWindow):
 
         self.default_input_path = os.path.join(self.base_path, "data", "egopath.jpg")
 
+        self._initial_sized = False
         self.init_ui()
         self.detect_device()
         self.load_models()
         self.load_default_image()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Size to the left panel only once it is laid out: its sizeHint is not
+        # final until the window is shown (word-wrapped labels, font metrics).
+        if not self._initial_sized:
+            self._initial_sized = True
+            self.set_initial_size()
+
+    def set_initial_size(self):
+        """Open tall enough to show the whole left control panel, capped to the screen."""
+        screen = QApplication.primaryScreen().availableGeometry()
+        # Window-frame (title bar / borders) height, known only after show.
+        frame_h = max(0, self.frameGeometry().height() - self.height())
+        # Height the left panel needs to show every group without the outer scroll.
+        needed_height = self.left_panel.sizeHint().height() + 40  # layout margins
+        max_client = screen.height() - frame_h - 40  # keep the frame on screen
+        height = min(needed_height, max_client)
+        width = min(3200, screen.width() - 80)
+        self.resize(max(1024, width), max(700, height))
 
     def init_ui(self):
         """Initialize the user interface."""
@@ -194,6 +272,7 @@ class TEPNetGUI(QMainWindow):
 
         # Left panel: Controls
         left_panel = QWidget()
+        self.left_panel = left_panel
         left_layout = QVBoxLayout()
         left_panel.setMinimumWidth(320)
         left_panel.setMaximumWidth(700)
@@ -265,21 +344,18 @@ class TEPNetGUI(QMainWindow):
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(10)
 
-        self.original_display_label = QLabel("Input preview")
-        self.original_display_label.setAlignment(Qt.AlignCenter)
-        self.original_display_label.setStyleSheet(
-            "border: 2px solid #ccc; background-color: #f8f8f8; min-height: 300px;"
+        original_col, self.original_display_label = self.make_preview_column(
+            "원본 (Original)", "Input preview"
         )
-        self.original_display_label.setMinimumSize(320, 300)
-        preview_layout.addWidget(self.original_display_label)
-
-        self.result_display_label = QLabel("Result preview")
-        self.result_display_label.setAlignment(Qt.AlignCenter)
-        self.result_display_label.setStyleSheet(
-            "border: 2px solid #ccc; background-color: #f8f8f8; min-height: 300px;"
+        single_col, self.single_display_label = self.make_preview_column(
+            "단일 프레임 (Single-frame)", "Result preview"
         )
-        self.result_display_label.setMinimumSize(320, 300)
-        preview_layout.addWidget(self.result_display_label)
+        rnn_col, self.rnn_display_label = self.make_preview_column(
+            "RNN (Temporal)", "Result preview"
+        )
+        preview_layout.addWidget(original_col)
+        preview_layout.addWidget(single_col)
+        preview_layout.addWidget(rnn_col)
 
         preview_area.setLayout(preview_layout)
 
@@ -300,6 +376,31 @@ class TEPNetGUI(QMainWindow):
 
         main_layout.addWidget(splitter)
         central_widget.setLayout(main_layout)
+
+    def make_preview_column(self, title, placeholder):
+        """Build a captioned image-preview column; returns (container, image_label)."""
+        column = QWidget()
+        col_layout = QVBoxLayout()
+        col_layout.setContentsMargins(0, 0, 0, 0)
+        col_layout.setSpacing(4)
+
+        caption = QLabel(title)
+        caption.setAlignment(Qt.AlignCenter)
+        caption_font = QFont()
+        caption_font.setBold(True)
+        caption.setFont(caption_font)
+        col_layout.addWidget(caption)
+
+        image_label = QLabel(placeholder)
+        image_label.setAlignment(Qt.AlignCenter)
+        image_label.setStyleSheet(
+            "border: 2px solid #ccc; background-color: #f8f8f8; min-height: 300px;"
+        )
+        image_label.setMinimumSize(280, 300)
+        col_layout.addWidget(image_label, 1)
+
+        column.setLayout(col_layout)
+        return column, image_label
 
     def create_file_group(self):
         """Create file selection group."""
@@ -434,7 +535,11 @@ class TEPNetGUI(QMainWindow):
 
         self.output_label = QLineEdit()
         self.output_label.setReadOnly(True)
-        self.output_label.setText(os.path.join(self.base_path, "output"))
+        # Restore the last-used output directory, falling back to <base>/output.
+        saved_output = self.settings.value(
+            "output_dir", os.path.join(self.base_path, "output")
+        )
+        self.output_label.setText(saved_output)
         layout.addWidget(self.output_label)
 
         output_button = QPushButton("Select Output Directory")
@@ -561,6 +666,21 @@ class TEPNetGUI(QMainWindow):
 
         self.show_model_info(self.get_model_path())
 
+        single_path, rnn_path = self.get_model_pair()
+        lines = ["", "Comparison panels:"]
+        if single_path:
+            lines.append(f"• Single-frame: {os.path.basename(single_path)}")
+        elif rnn_path:
+            lines.append("• Single-frame: RNN base net (fallback)")
+        else:
+            lines.append("• Single-frame: (missing)")
+        lines.append(
+            f"• RNN: {os.path.basename(rnn_path)}" if rnn_path else "• RNN: (missing)"
+        )
+        self.model_info_label.setText(
+            self.model_info_label.text() + "\n" + "\n".join(lines)
+        )
+
     def show_model_info(self, model_path):
         """Read a model's config.yaml and display its method/backbone."""
         config_file = (
@@ -585,6 +705,32 @@ class TEPNetGUI(QMainWindow):
         if not self.selected_model:
             return None
         return self.model_dirs.get(self.selected_model)
+
+    def get_model_pair(self):
+        """Resolve the (single-frame, RNN) checkpoint paths for the current selection.
+
+        Selecting either a base model "X" or its "XRNN" counterpart yields both
+        paths when each exists on disk, so the two distinct checkpoints can be
+        loaded and compared side by side. Either entry may be None when that
+        variant is missing.
+        """
+        if self.custom_model_path:
+            # A custom folder is run on its own; slot it by its temporal flag.
+            config_file = os.path.join(self.custom_model_path, "config.yaml")
+            is_temporal = False
+            if os.path.exists(config_file):
+                with open(config_file) as f:
+                    is_temporal = bool(yaml.safe_load(f).get("temporal"))
+            if is_temporal:
+                return None, self.custom_model_path
+            return self.custom_model_path, None
+
+        name = self.selected_model
+        if not name:
+            return None, None
+        base_name = name[:-3] if name.endswith("RNN") else name
+        rnn_name = base_name + "RNN"
+        return self.model_dirs.get(base_name), self.model_dirs.get(rnn_name)
 
     def browse_model(self):
         """Browse for a custom model directory."""
@@ -627,6 +773,9 @@ class TEPNetGUI(QMainWindow):
         dialog.setFileMode(QFileDialog.Directory)
         dialog.setOption(QFileDialog.ShowDirsOnly, True)
         dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        # Avoid per-file mime-type icon resolution, which is the main slowdown
+        # of the non-native dialog in directories with many files.
+        dialog.setIconProvider(self._folder_icon_provider)
         dialog.resize(1400, 800)
         if dialog.exec_() != QFileDialog.Accepted:
             return
@@ -657,10 +806,19 @@ class TEPNetGUI(QMainWindow):
     def browse_output(self):
         """Browse for output directory."""
         dir_path = QFileDialog.getExistingDirectory(
-            self, "Select Output Directory", self.base_path
+            self, "Select Output Directory", self.output_label.text() or self.base_path
         )
         if dir_path:
             self.output_label.setText(dir_path)
+            # Remember it across sessions.
+            self.settings.setValue("output_dir", dir_path)
+
+    def reset_result_panels(self):
+        """Clear the single-frame and RNN result panels."""
+        self.last_single_image = None
+        self.last_rnn_image = None
+        self.single_display_label.setText("Result preview")
+        self.rnn_display_label.setText("Result preview")
 
     def load_preview(self, file_path):
         """Load and display file preview."""
@@ -675,7 +833,7 @@ class TEPNetGUI(QMainWindow):
                 )
                 if not image_files:
                     self.original_display_label.clear()
-                    self.result_display_label.clear()
+                    self.reset_result_panels()
                     self.status_label.setText("No supported images in folder")
                     return
                 file_path = image_files[0]
@@ -684,9 +842,8 @@ class TEPNetGUI(QMainWindow):
             if ext in self.supported_image_extensions:
                 img = Image.open(file_path)
                 self.current_image = img
-                self.last_result_image = None
+                self.reset_result_panels()
                 self.display_image(img, self.original_display_label)
-                self.result_display_label.setText("Result preview")
             elif ext in [".mp4", ".avi"]:
                 import cv2
 
@@ -696,13 +853,12 @@ class TEPNetGUI(QMainWindow):
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     img = Image.fromarray(frame_rgb)
                     self.current_image = img
-                    self.last_result_image = None
+                    self.reset_result_panels()
                     self.display_image(img, self.original_display_label)
-                    self.result_display_label.setText("Result preview")
                 cap.release()
             else:
                 self.original_display_label.clear()
-                self.result_display_label.clear()
+                self.reset_result_panels()
                 self.status_label.setText("Unsupported preview file type")
         except Exception as e:
             self.status_label.setText(f"Preview error: {str(e)}")
@@ -739,8 +895,10 @@ class TEPNetGUI(QMainWindow):
         """Rescale and refresh current preview images on resize."""
         if self.current_image is not None:
             self.display_image(self.current_image, self.original_display_label)
-        if self.last_result_image is not None:
-            self.display_image(self.last_result_image, self.result_display_label)
+        if self.last_single_image is not None:
+            self.display_image(self.last_single_image, self.single_display_label)
+        if self.last_rnn_image is not None:
+            self.display_image(self.last_rnn_image, self.rnn_display_label)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -769,8 +927,8 @@ class TEPNetGUI(QMainWindow):
             QMessageBox.warning(self, "Error", "Please select a valid input file")
             return
 
-        model_path = self.get_model_path()
-        if not model_path or not os.path.exists(model_path):
+        single_path, rnn_path = self.get_model_pair()
+        if not single_path and not rnn_path:
             QMessageBox.warning(self, "Error", "Please select a valid model")
             return
 
@@ -783,20 +941,41 @@ class TEPNetGUI(QMainWindow):
         device = self.device_combo.currentText()
         crop_coords = self.get_crop_coords()
 
-        # Create detector
+        # Create detectors (single-frame and RNN are distinct checkpoints)
         try:
-            self.status_label.setText("Initializing model...")
+            self.status_label.setText("Initializing model(s)...")
             self.run_button.setEnabled(False)
             self.stop_button.setEnabled(True)
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
 
-            self.detector = Detector(
-                model_path=model_path,
-                crop_coords=crop_coords,
-                runtime="pytorch",
-                device=device,
-            )
+            detector_single = None
+            detector_rnn = None
+            if single_path and os.path.exists(single_path):
+                detector_single = Detector(
+                    model_path=single_path,
+                    crop_coords=crop_coords,
+                    runtime="pytorch",
+                    device=device,
+                )
+            if rnn_path and os.path.exists(rnn_path):
+                detector_rnn = Detector(
+                    model_path=rnn_path,
+                    crop_coords=crop_coords,
+                    runtime="pytorch",
+                    device=device,
+                )
+
+            # Keep a reference so closeEvent etc. behave; prefer the RNN one.
+            self.detector = detector_rnn or detector_single
+
+            if detector_single is None and detector_rnn is None:
+                raise RuntimeError("No usable model checkpoint found")
+            if detector_single is None and detector_rnn is not None:
+                # Single-frame panel will fall back to the RNN base net.
+                self.single_display_label.setText("Single-frame (RNN base net)")
+            if detector_rnn is None:
+                self.rnn_display_label.setText("No RNN model")
 
             # Determine mode: video, folder, or individual image
             current_path = self.file_label.text()
@@ -813,7 +992,8 @@ class TEPNetGUI(QMainWindow):
 
             # Run inference in worker thread
             self.inference_worker = InferenceWorker(
-                self.detector,
+                detector_single=detector_single,
+                detector_rnn=detector_rnn,
                 input_path=input_path,
                 input_paths=input_paths,
                 is_video=is_video,
@@ -831,33 +1011,50 @@ class TEPNetGUI(QMainWindow):
             self.progress_bar.setVisible(False)
             QMessageBox.critical(self, "Error", f"Failed to initialize model: {str(e)}")
 
+    def show_results(self, data):
+        """Display the original/single-frame/RNN trio from a result payload."""
+        if data.get("original") is not None:
+            self.current_image = data["original"]
+        if self.current_image is not None:
+            self.display_image(self.current_image, self.original_display_label)
+        if data.get("single_image") is not None:
+            self.last_single_image = data["single_image"]
+            self.display_image(self.last_single_image, self.single_display_label)
+        if data.get("rnn_image") is not None:
+            self.last_rnn_image = data["rnn_image"]
+            self.display_image(self.last_rnn_image, self.rnn_display_label)
+
+    def save_results(self, data, basename):
+        """Save the single-frame and RNN visualizations side by side in the output dir."""
+        output_dir = self.output_label.text()
+        os.makedirs(output_dir, exist_ok=True)
+        saved = []
+        if data.get("single_image") is not None:
+            path = os.path.join(output_dir, f"result_single_{basename}")
+            data["single_image"].save(path)
+            saved.append(path)
+        if data.get("rnn_image") is not None:
+            path = os.path.join(output_dir, f"result_rnn_{basename}")
+            data["rnn_image"].save(path)
+            saved.append(path)
+        return saved
+
     def on_inference_result(self, data):
         """Handle inference result."""
         try:
             if data["type"] == "image":
-                if self.current_image:
-                    self.display_image(self.current_image, self.original_display_label)
-                self.display_image(data["image"], self.result_display_label)
-                self.status_label.setText("Inference complete!")
-
-                self.last_result_image = data["image"]
-                self.update_preview_images()
-
-                # Save result
-                output_dir = self.output_label.text()
-                os.makedirs(output_dir, exist_ok=True)
-                output_path = os.path.join(
-                    output_dir, "result_" + os.path.basename(self.file_label.text())
+                self.show_results(data)
+                saved = self.save_results(
+                    data, os.path.basename(self.file_label.text())
                 )
-                data["image"].save(output_path)
-                self.status_label.setText(f"Saved to: {output_path}")
+                self.status_label.setText(
+                    f"Saved: {', '.join(saved)}" if saved else "Inference complete!"
+                )
 
             elif data["type"] == "video_frame":
                 progress = (data["frame_num"] + 1) / data["total_frames"] * 100
                 self.progress_bar.setValue(int(progress))
-                if self.current_image:
-                    self.display_image(self.current_image, self.original_display_label)
-                self.display_image(data["image"], self.result_display_label)
+                self.show_results(data)
                 self.status_label.setText(
                     f"Processing: {data['frame_num']+1}/{data['total_frames']} frames"
                 )
@@ -865,21 +1062,10 @@ class TEPNetGUI(QMainWindow):
             elif data["type"] == "folder_image":
                 progress = (data["index"] + 1) / data["total"] * 100
                 self.progress_bar.setValue(int(progress))
-                self.current_image = Image.open(data["input_path"])
-                self.display_image(self.current_image, self.original_display_label)
-                self.display_image(data["image"], self.result_display_label)
-                self.last_result_image = data["image"]
-                self.update_preview_images()
-
-                output_dir = self.output_label.text()
-                os.makedirs(output_dir, exist_ok=True)
-                output_path = os.path.join(
-                    output_dir,
-                    f"result_{os.path.basename(data['input_path'])}",
-                )
-                data["image"].save(output_path)
+                self.show_results(data)
+                self.save_results(data, os.path.basename(data["input_path"]))
                 self.status_label.setText(
-                    f"[{data['index']+1}/{data['total']}] Saved: {output_path}"
+                    f"[{data['index']+1}/{data['total']}] {os.path.basename(data['input_path'])}"
                 )
 
         except Exception as e:
