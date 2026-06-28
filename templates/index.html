@@ -16,54 +16,64 @@
       --muted: #6b7280;
     }
     * { box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
       background: var(--bg);
       color: var(--text);
+      /* Full-height app shell: header + a flex row that fills the viewport. */
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
     }
     header {
       background: #263238;
       color: #fff;
-      padding: 14px 22px;
-      font-size: 18px;
+      padding: 10px 18px;
+      font-size: 16px;
       font-weight: 600;
       display: flex;
       align-items: center;
       gap: 10px;
+      flex-shrink: 0;
     }
     header .status { margin-left: auto; font-size: 13px; font-weight: 400; opacity: 0.85; }
-    .layout { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
-    .sidebar { width: 340px; flex-shrink: 0; }
-    .main { flex: 1; min-width: 0; }
+    .layout {
+      display: flex; gap: 12px; padding: 12px; align-items: stretch;
+      flex: 1; min-height: 0; overflow: hidden;
+    }
+    .sidebar { width: 320px; flex-shrink: 0; overflow-y: auto; }
+    .main { flex: 1; min-width: 0; display: flex; min-height: 0; }
     .card {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 14px;
-      margin-bottom: 14px;
+      padding: 10px;
+      margin-bottom: 10px;
     }
     .card h2 {
-      margin: 0 0 10px;
-      font-size: 13px;
+      margin: 0 0 7px;
+      font-size: 12px;
       text-transform: uppercase;
       letter-spacing: 0.04em;
       color: var(--muted);
     }
-    label { display: block; font-size: 13px; margin-bottom: 6px; }
+    label { display: block; font-size: 13px; margin-bottom: 4px; }
     select, input[type="number"], input[type="file"] {
       width: 100%;
-      padding: 8px;
+      padding: 6px;
       border: 1px solid var(--border);
       border-radius: 6px;
       font-size: 13px;
       background: #fff;
     }
-    .model-list { max-height: 260px; overflow-y: auto; }
+    .model-list { max-height: 150px; overflow-y: auto; }
     .model-item {
       display: flex; align-items: center; gap: 8px;
-      padding: 7px 9px; border: 1px solid var(--border);
-      border-radius: 6px; margin-bottom: 6px; cursor: pointer;
+      padding: 5px 8px; border: 1px solid var(--border);
+      border-radius: 6px; margin-bottom: 5px; cursor: pointer;
       font-size: 13px; transition: all .12s;
     }
     .model-item:hover { border-color: var(--accent); }
@@ -79,7 +89,7 @@
     .crop-coords.show { display: grid; }
     .crop-coords label { font-size: 12px; margin-bottom: 3px; }
     .btn {
-      width: 100%; padding: 11px; border: none; border-radius: 6px;
+      width: 100%; padding: 9px; border: none; border-radius: 6px;
       font-size: 14px; font-weight: 600; cursor: pointer; color: #fff;
       margin-top: 4px;
     }
@@ -91,21 +101,39 @@
     .progress-wrap { margin-top: 10px; height: 8px; background: #e0e0e0; border-radius: 4px; overflow: hidden; display: none; }
     .progress-bar { height: 100%; width: 0%; background: var(--accent); transition: width .15s; }
     .status-line { margin-top: 10px; font-size: 13px; color: var(--text); }
-    .previews { display: grid; grid-template-columns: 1fr; gap: 14px; }
-    .preview-col { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
-    .preview-col h3 { margin: 0 0 8px; text-align: center; font-size: 14px; }
+    /* Three preview panels stacked vertically, together filling the main
+       column's full height (each takes an equal third). */
+    .previews {
+      flex: 1; min-height: 0;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .preview-col {
+      flex: 1 1 0; min-height: 0;
+      display: flex; flex-direction: column;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px;
+    }
+    .preview-col h3 { margin: 0 0 5px; text-align: center; font-size: 13px; flex-shrink: 0; }
     .preview-col .frame {
-      width: 100%; min-height: 320px; background: #fafafa;
+      flex: 1; min-height: 0; width: 100%;
+      background: #fafafa;
       border: 1px dashed #ccc; border-radius: 6px;
       display: flex; align-items: center; justify-content: center;
       color: #aaa; font-size: 13px; overflow: hidden;
     }
-    .preview-col img { max-width: 100%; max-height: 70vh; display: block; }
+    .preview-col img {
+      max-width: 100%; max-height: 100%;
+      object-fit: contain; display: block;
+    }
     .radio-row { display: flex; gap: 14px; }
     .radio-row label { display: flex; align-items: center; gap: 5px; margin: 0; }
     @media (max-width: 1100px) {
-      .layout { flex-direction: column; }
-      .sidebar { width: 100%; }
+      /* Narrow screens: stack sidebar above the previews and let the page
+         scroll normally instead of forcing everything into one viewport. */
+      body { height: auto; overflow: auto; }
+      .layout { flex-direction: column; overflow: visible; }
+      .sidebar { width: 100%; overflow-y: visible; }
+      .preview-col { min-height: 60vh; }
     }
   </style>
 </head>
@@ -184,6 +212,13 @@
     let selectedModel = null;
     let videoController = null;
     let uploadTick = null;
+
+    // Identity of a selected file. The server caches uploads under this key, so
+    // re-running the same file (even after a server restart or browser reload)
+    // reuses the server-side copy instead of re-uploading the whole video.
+    function fileKey(f) {
+      return f ? `${f.name}:${f.size}:${f.lastModified}` : null;
+    }
 
     function setFrame(el, src, placeholder) {
       if (src) {
@@ -307,11 +342,30 @@
     // Uses XMLHttpRequest (not fetch) so the upload phase can report real
     // progress via upload.onprogress, while the streamed SSE response is parsed
     // incrementally from xhr.responseText.
-    function runVideo() {
+    async function runVideo() {
       setBusy(true);
       const f = $("fileInput").files[0];
+      const key = fileKey(f);
       const sizeMb = f ? (f.size / (1024 * 1024)).toFixed(1) : "?";
-      $("statusLine").textContent = `Uploading 0% of ${sizeMb} MB…`;
+
+      // Ask the server whether it already holds this file (survives restarts &
+      // reloads). If so, skip uploading and just reference it by key.
+      $("statusLine").textContent = "Checking server cache…";
+      let reuse = false;
+      if (key) {
+        try {
+          const r = await fetch(`/api/video_cached?key=${encodeURIComponent(key)}`);
+          reuse = r.ok && (await r.json()).cached;
+        } catch (_) {}
+      }
+
+      const fd = buildForm();
+      fd.append("video_key", key || "");
+      if (reuse) fd.delete("file");
+
+      $("statusLine").textContent = reuse
+        ? "Re-running cached video (no upload needed)…"
+        : `Uploading 0% of ${sizeMb} MB…`;
       $("progressBar").style.width = "0%";
 
       const xhr = new XMLHttpRequest();
@@ -395,6 +449,8 @@
         if (xhr.status >= 400) {
           let detail = `HTTP ${xhr.status}`;
           try { detail = JSON.parse(xhr.responseText).error || detail; } catch (_) {}
+          // Cache miss on a reuse attempt — next run's pre-check will re-upload.
+          if (reuse) detail += " (press Run again to re-upload)";
           $("statusLine").textContent = "Error: " + detail;
         } else if (!sawTerminal) {
           $("statusLine").textContent = "Stopped — stream ended unexpectedly";
@@ -409,7 +465,7 @@
       xhr.onabort = () => { stopUploadTick(); setBusy(false); };
 
       xhr.open("POST", "/api/infer_video");
-      xhr.send(buildForm());
+      xhr.send(fd);
     }
 
     $("runBtn").onclick = () => {

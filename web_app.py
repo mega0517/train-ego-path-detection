@@ -97,6 +97,43 @@ def _require_auth():
 _detector_cache = {}
 _detector_lock = threading.Lock()
 
+# Uploaded videos are cached on disk, keyed by a client-supplied file identity
+# (name:size:lastModified), so the client can re-run inference (different model/
+# crop/device) without re-uploading — and this survives server restarts and
+# browser reloads. Bounded to the most recent few; older files are evicted.
+import glob as _glob
+import hashlib as _hashlib
+
+_VIDEO_CACHE_DIR = os.path.join(BASE_PATH, ".video_cache")
+os.makedirs(_VIDEO_CACHE_DIR, exist_ok=True)
+_video_cache_lock = threading.Lock()
+_VIDEO_CACHE_MAX = int(os.environ.get("WEB_VIDEO_CACHE_MAX", "10"))
+
+
+def _video_id_for(key):
+    """Stable, filesystem-safe id for a client file key (name:size:lastModified)."""
+    return _hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+def _cached_video_path(vid):
+    """Return the on-disk path for a cached video id, or None."""
+    if not vid:
+        return None
+    matches = _glob.glob(os.path.join(_VIDEO_CACHE_DIR, vid + ".*"))
+    return matches[0] if matches else None
+
+
+def _evict_old_videos():
+    """Keep only the most-recently-modified _VIDEO_CACHE_MAX cached videos."""
+    files = sorted(
+        _glob.glob(os.path.join(_VIDEO_CACHE_DIR, "*")), key=os.path.getmtime
+    )
+    for old in files[:-_VIDEO_CACHE_MAX] if _VIDEO_CACHE_MAX > 0 else []:
+        try:
+            os.unlink(old)
+        except OSError:
+            pass
+
 
 # --------------------------------------------------------------------------- #
 # Model / device discovery
@@ -417,6 +454,15 @@ def api_infer_image():
     )
 
 
+@app.route("/api/video_cached")
+def api_video_cached():
+    """Tell the client whether a file (by its key) is already cached server-side,
+    so it can skip re-uploading."""
+    key = (request.args.get("key") or "").strip()
+    vid = _video_id_for(key) if key else None
+    return jsonify({"cached": bool(_cached_video_path(vid)), "video_id": vid})
+
+
 @app.route("/api/infer_video", methods=["POST"])
 def api_infer_video():
     """Run inference on an uploaded video, streaming per-frame results via SSE."""
@@ -426,25 +472,57 @@ def api_infer_video():
     stride = max(1, int(request.form.get("stride", 1)))
 
     upload = request.files.get("file")
-    if upload is None or not upload.filename:
+    video_key = (request.form.get("video_key") or "").strip()
+    vid = _video_id_for(video_key) if video_key else None
+
+    if upload is not None and upload.filename:
+        # New upload: persist into the on-disk cache keyed by the client's file
+        # identity so future runs (even after a restart) can reuse it.
+        suffix = os.path.splitext(upload.filename)[1] or ".mp4"
+        if vid:
+            old = _cached_video_path(vid)
+            if old:
+                try:
+                    os.unlink(old)
+                except OSError:
+                    pass
+            video_path = os.path.join(_VIDEO_CACHE_DIR, vid + suffix)
+        else:
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(
+                delete=False, suffix=suffix, dir=_VIDEO_CACHE_DIR
+            )
+            video_path = tmp.name
+            tmp.close()
+
+        upload.save(video_path)
+        if os.path.getsize(video_path) == 0:
+            try:
+                os.unlink(video_path)
+            except OSError:
+                pass
+            return jsonify(
+                {"error": "Upload was empty (0 bytes). The file failed to upload — "
+                          "check your connection/file and try again."}
+            ), 400
+        with _video_cache_lock:
+            _evict_old_videos()
+        video_id = vid or os.path.basename(video_path)
+        reused = False
+    elif vid:
+        # Re-run without re-uploading: look up the previously cached file.
+        video_path = _cached_video_path(vid)
+        if not video_path or not os.path.exists(video_path):
+            return jsonify(
+                {"error": "Cached video is no longer available on the server — "
+                          "please upload the file again."}
+            ), 410
+        video_id = vid
+        reused = True
+    else:
         return jsonify({"error": "No video provided"}), 400
 
-    # Persist to a temp file because cv2.VideoCapture needs a real path.
-    import tempfile
-
-    suffix = os.path.splitext(upload.filename)[1] or ".mp4"
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    upload.save(tmp.name)
-    tmp.close()
-
-    saved_size = os.path.getsize(tmp.name)
-    if saved_size == 0:
-        os.unlink(tmp.name)
-        return jsonify(
-            {"error": "Upload was empty (0 bytes). The file failed to upload — "
-                      "check your connection/file and try again."}
-        ), 400
-    saved_mb = saved_size / (1024 * 1024)
+    saved_mb = os.path.getsize(video_path) / (1024 * 1024)
 
     def event_stream():
         import json
@@ -455,14 +533,18 @@ def api_infer_video():
 
         t0 = time.time()
         try:
-            yield sse({"type": "status",
-                       "message": f"Received {saved_mb:.1f} MB · loading model…"})
+            first_msg = (
+                f"Using cached video ({saved_mb:.1f} MB) · loading model…"
+                if reused else
+                f"Received {saved_mb:.1f} MB · loading model…"
+            )
+            yield sse({"type": "status", "message": first_msg, "video_id": video_id})
             det_single, det_rnn = detectors_for_request(
                 model_name, device, crop_mode, crop_coords
             )
             yield sse({"type": "status", "message": "Model ready · decoding video…"})
             emitted = 0
-            for frame_idx, img, total in decode_video_frames(tmp.name):
+            for frame_idx, img, total in decode_video_frames(video_path):
                 if frame_idx % stride == 0:
                     single_vis, rnn_vis = run_both(img, det_single, det_rnn)
                     payload = {
@@ -492,11 +574,14 @@ def api_infer_video():
                     "video (e.g. ffmpeg -i input -c copy -movflags faststart out.mp4)."
                 )
             yield f"data: {json.dumps({'type': 'error', 'error': msg})}\n\n"
-        finally:
+            # On decode failure, drop the bad file from the cache so a re-upload
+            # is required (a truncated file won't get better on re-run).
             try:
-                os.unlink(tmp.name)
+                os.unlink(video_path)
             except OSError:
                 pass
+        # NOTE: on success the file is intentionally kept in _video_cache so the
+        # client can re-run (different model/crop/device) without re-uploading.
 
     return Response(
         stream_with_context(event_stream()),

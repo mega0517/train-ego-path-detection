@@ -24,3 +24,6 @@ train_restart.log
 train_restart.log.*
 train_restart.*.log
 _workspace/
+
+# Web app persistent video upload cache
+.video_cache/
