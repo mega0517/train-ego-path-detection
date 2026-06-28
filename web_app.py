@@ -43,6 +43,19 @@ RNN_WEIGHTS_PATH = os.path.join(BASE_PATH, "egopathrnn", "weights")
 DEFAULT_IMAGE = os.path.join(BASE_PATH, "data", "egopath.jpg")
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 SUPPORTED_VIDEO_EXTENSIONS = (".mp4", ".avi")
+# Images the server can read from a folder directly (no upload).
+FOLDER_IMAGE_EXTENSIONS = SUPPORTED_IMAGE_EXTENSIONS + (".heic", ".heif", ".webp")
+
+
+def list_folder_images(path):
+    """Sorted image filenames in a server-side folder, or None if not a folder."""
+    if not path or not os.path.isdir(path):
+        return None
+    return sorted(
+        f for f in os.listdir(path)
+        if f.lower().endswith(FOLDER_IMAGE_EXTENSIONS)
+        and os.path.isfile(os.path.join(path, f))
+    )
 
 app = Flask(__name__)
 # Videos can be large; allow up to 4 GB uploads. (Oversized uploads otherwise
@@ -642,6 +655,279 @@ def api_infer_video():
                 pass
         # NOTE: on success the file is intentionally kept in _video_cache so the
         # client can re-run (different model/crop/device) without re-uploading.
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+_BROWSE_ROOT = os.environ.get("WEB_BROWSE_ROOT", "/data3/bhkim/datasets")
+
+
+@app.route("/api/browse")
+def api_browse():
+    """List subfolders (with image counts) for a server-side folder browser,
+    clamped within WEB_BROWSE_ROOT so callers can't escape it."""
+    root = os.path.realpath(_BROWSE_ROOT)
+    req = (request.args.get("path") or "").strip()
+    cur = os.path.realpath(req) if req else root
+    if cur != root and not cur.startswith(root + os.sep):
+        cur = root  # clamp back into the allowed root
+    if not os.path.isdir(cur):
+        return jsonify({"ok": False, "error": f"Not a folder: {cur}"}), 400
+
+    dirs = []
+    try:
+        for name in sorted(os.listdir(cur)):
+            full = os.path.join(cur, name)
+            if os.path.isdir(full):
+                dirs.append({"name": name, "path": full,
+                             "images": len(list_folder_images(full) or [])})
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    parent = os.path.dirname(cur)
+    if cur == root or not (parent == root or parent.startswith(root + os.sep)):
+        parent = None
+    return jsonify({
+        "ok": True, "path": cur, "parent": parent, "root": root,
+        "dirs": dirs, "images": len(list_folder_images(cur) or []),
+    })
+
+
+@app.route("/api/list_server_folder")
+def api_list_server_folder():
+    """Count image files in a server-side folder (so the client can run inference
+    on them without uploading anything)."""
+    path = (request.args.get("path") or "").strip()
+    files = list_folder_images(path)
+    if files is None:
+        return jsonify({"ok": False, "error": f"Not a folder: {path or '(empty)'}"}), 400
+    return jsonify({"ok": True, "path": path, "count": len(files), "sample": files[:20]})
+
+
+_UPLOAD_ROOT = os.environ.get("WEB_UPLOAD_ROOT", "/data3/bhkim/datasets")
+
+
+def _safe_dest_dir(subdir):
+    """Resolve a destination folder strictly under _UPLOAD_ROOT, or None.
+
+    Rejects absolute paths, '..', and anything that would escape the root.
+    """
+    subdir = (subdir or "").strip().strip("/")
+    if not subdir:
+        return None
+    parts = []
+    for p in subdir.split("/"):
+        p = p.strip()
+        if p in ("", ".", "..") or "\\" in p:
+            return None
+        parts.append(p)
+    dest = os.path.realpath(os.path.join(_UPLOAD_ROOT, *parts))
+    root = os.path.realpath(_UPLOAD_ROOT)
+    if dest != root and not dest.startswith(root + os.sep):
+        return None
+    return dest
+
+
+@app.route("/api/upload_to_server", methods=["POST"])
+def api_upload_to_server():
+    """Save uploaded files into a subfolder under WEB_UPLOAD_ROOT (no SSH needed),
+    so they can then be processed with the no-upload server-folder mode."""
+    from werkzeug.utils import secure_filename
+
+    dest = _safe_dest_dir(request.form.get("subdir"))
+    if dest is None:
+        return jsonify({"error": "Invalid destination folder name."}), 400
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"error": "No files provided."}), 400
+
+    os.makedirs(dest, exist_ok=True)
+    saved, skipped = 0, []
+    for f in files:
+        if not f.filename:
+            continue
+        name = secure_filename(os.path.basename(f.filename)) or None
+        if not name:
+            skipped.append(f.filename)
+            continue
+        out = os.path.join(dest, name)
+        f.save(out)
+        if os.path.getsize(out) == 0:
+            os.unlink(out)
+            skipped.append(name)
+            continue
+        saved += 1
+    return jsonify({"ok": True, "path": dest, "saved": saved, "skipped": len(skipped)})
+
+
+def _under_allowed_root(path):
+    """Realpath of *path* if it sits within the browse or upload root, else None."""
+    rp = os.path.realpath(path)
+    for r in (os.path.realpath(_BROWSE_ROOT), os.path.realpath(_UPLOAD_ROOT)):
+        if rp == r or rp.startswith(r + os.sep):
+            return rp
+    return None
+
+
+@app.route("/api/optimize_folder", methods=["POST"])
+def api_optimize_folder():
+    """Convert a folder of (often huge PNG/RGBA) images to resized JPEGs in a
+    sibling '<name>_opt' folder, so later inference reads small files fast.
+    Streams per-image progress via SSE."""
+    src = (request.form.get("folder") or "").strip()
+    try:
+        max_w = int(request.form.get("max_width", "1920"))
+    except ValueError:
+        max_w = 1920
+
+    src_real = _under_allowed_root(src) if src else None
+    if src_real is None or not os.path.isdir(src_real):
+        return jsonify({"error": "Folder must be inside the allowed data root."}), 400
+    files = list_folder_images(src_real)
+    if not files:
+        return jsonify({"error": "No images found in that folder."}), 400
+    dest = src_real.rstrip("/") + "_opt"
+    if _under_allowed_root(dest) is None:
+        return jsonify({"error": "Destination outside allowed root."}), 400
+
+    def event_stream():
+        import json
+        import time
+
+        def sse(obj):
+            return f"data: {json.dumps(obj)}\n\n"
+
+        t0 = time.time()
+        try:
+            os.makedirs(dest, exist_ok=True)
+            yield sse({"type": "status",
+                       "message": f"Optimizing {len(files)} images → {os.path.basename(dest)}"})
+            done = 0
+            for i, name in enumerate(files):
+                try:
+                    im = Image.open(os.path.join(src_real, name))
+                    im.load()
+                    if im.mode != "RGB":
+                        im = im.convert("RGB")
+                    if max_w and im.width > max_w:
+                        im = im.resize((max_w, max(1, round(im.height * max_w / im.width))))
+                    out = os.path.join(dest, os.path.splitext(name)[0] + ".jpg")
+                    im.save(out, "JPEG", quality=90)
+                    done += 1
+                except Exception as e:  # noqa: BLE001
+                    yield sse({"type": "image_error", "name": name, "error": str(e)})
+                yield sse({"type": "progress", "index": i, "total": len(files),
+                           "name": name, "elapsed": round(time.time() - t0, 1)})
+            yield sse({"type": "done", "count": done, "total": len(files),
+                       "dest": dest, "elapsed": round(time.time() - t0, 1)})
+        except Exception as e:  # noqa: BLE001
+            yield sse({"type": "error", "error": str(e)})
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/api/infer_folder", methods=["POST"])
+def api_infer_folder():
+    """Run inference on every image in a server-side folder, streaming per-image
+    results via SSE. No upload — the server reads the files directly."""
+    model_name = request.form.get("model")
+    device = request.form.get("device", "cpu")
+    crop_mode, crop_coords = _parse_crop(request.form)
+    folder = (request.form.get("folder") or "").strip()
+    try:
+        proc_width = int(request.form.get("proc_width", os.environ.get("WEB_MAX_PROC_WIDTH", "1280")))
+    except ValueError:
+        proc_width = 1280
+
+    files = list_folder_images(folder)
+    if files is None:
+        return jsonify({"error": f"Not a folder: {folder or '(empty)'}"}), 400
+    if not files:
+        return jsonify({"error": "No image files found in that folder."}), 400
+    workers = max(1, int(os.environ.get("WEB_DECODE_WORKERS", "6")))
+
+    def event_stream():
+        import json
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        def sse(obj):
+            return f"data: {json.dumps(obj)}\n\n"
+
+        def decode_one(name):
+            """Read + decode + downscale a frame (runs in worker threads; PIL
+            releases the GIL during decode so this parallelises real work)."""
+            img = Image.open(os.path.join(folder, name))
+            img.load()
+            return downscale_to_width(img, proc_width)
+
+        t0 = time.time()
+        ex = ThreadPoolExecutor(max_workers=workers)
+        try:
+            yield sse({"type": "status",
+                       "message": f"Found {len(files)} images · loading model…"})
+            det_single, det_rnn = detectors_for_request(
+                model_name, device, crop_mode, crop_coords
+            )
+            yield sse({"type": "status",
+                       "message": f"Model ready · processing ({workers} decode workers)…"})
+
+            # Decode-ahead: keep a sliding window of images decoding in worker
+            # threads while the GPU (serialized here) processes the current one.
+            window = workers + 2
+            futures = {}
+            submitted = 0
+
+            def fill(upto):
+                nonlocal submitted
+                while submitted < len(files) and submitted <= upto + window:
+                    futures[submitted] = ex.submit(decode_one, files[submitted])
+                    submitted += 1
+
+            fill(0)
+            crop_scaled = False
+            done = 0
+            for i, name in enumerate(files):
+                fut = futures.pop(i)
+                fill(i)  # refill the window while we run inference + encode
+                try:
+                    proc, scale = fut.result()
+                    if scale != 1.0 and crop_mode == "manual" and not crop_scaled:
+                        for det in (det_single, det_rnn):
+                            if det is not None and isinstance(det.crop_coords, tuple):
+                                det.crop_coords = tuple(round(c * scale) for c in det.crop_coords)
+                        crop_scaled = True
+                    for det in (det_single, det_rnn):  # treat each image independently
+                        if det is not None:
+                            det.reset_temporal()
+                    single_vis, rnn_vis = run_both(proc, det_single, det_rnn)
+                    yield sse({
+                        "type": "image", "index": i, "total": len(files), "name": name,
+                        "elapsed": round(time.time() - t0, 1),
+                        "original": pil_to_data_uri(proc, quality=80),
+                        "single": pil_to_data_uri(single_vis, quality=80),
+                        "rnn": pil_to_data_uri(rnn_vis, quality=80),
+                        "has_rnn": det_rnn is not None,
+                        "single_is_fallback": det_single is None and det_rnn is not None,
+                    })
+                    done += 1
+                except Exception as e:  # noqa: BLE001 - report and continue
+                    yield sse({"type": "image_error", "index": i, "total": len(files),
+                               "name": name, "error": str(e)})
+            yield sse({"type": "done", "count": done, "total": len(files),
+                       "elapsed": round(time.time() - t0, 1)})
+        except Exception as e:  # noqa: BLE001
+            yield sse({"type": "error", "error": str(e)})
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
 
     return Response(
         stream_with_context(event_stream()),

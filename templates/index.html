@@ -153,6 +153,19 @@
       padding: 1px 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .thumb.err { border-color: var(--danger); }
+    /* Server folder browser */
+    .browser { margin-top: 8px; border: 1px solid var(--border); border-radius: 6px;
+      max-height: 220px; overflow-y: auto; background: #fff; font-size: 13px; }
+    .br-head { display: flex; gap: 6px; align-items: center; padding: 6px 8px;
+      border-bottom: 1px solid var(--border); background: #f7f9fb; position: sticky; top: 0; }
+    .br-path { flex: 1; font-family: monospace; font-size: 11px; color: var(--muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+    .br-use { flex-shrink: 0; padding: 4px 8px; font-size: 12px; border: none; border-radius: 5px;
+      background: var(--accent); color: #fff; cursor: pointer; }
+    .br-item { display: flex; align-items: center; gap: 6px; padding: 6px 8px; cursor: pointer; }
+    .br-item:hover { background: #eef6ef; }
+    .br-item .br-cnt { margin-left: auto; font-size: 11px; color: var(--muted); }
+    .br-item .br-pick { flex-shrink: 0; font-size: 11px; color: var(--accent); padding: 0 4px; }
     @media (max-width: 1100px) {
       /* Narrow screens: stack sidebar above the previews and let the page
          scroll normally instead of forcing everything into one viewport. */
@@ -175,9 +188,38 @@
         <h2>Input</h2>
         <label>Image or video file</label>
         <input type="file" id="fileInput" accept="image/*,video/*,.mov,.mkv,.webm,.m4v,.heic" />
-        <label style="margin-top:8px;">Or a folder of images (batch)</label>
+        <label style="margin-top:8px;">Or a folder of images (batch upload)</label>
         <input type="file" id="folderInput" webkitdirectory directory multiple />
+        <label style="margin-top:8px;">Or a server folder (no upload — fastest)</label>
+        <div class="grid2">
+          <input type="text" id="serverFolder" placeholder="pick or type a path" />
+          <button class="btn" id="browseBtn" style="margin-top:0;background:#455a64;">Browse server…</button>
+        </div>
+        <div class="browser" id="browser" style="display:none;"></div>
+        <div class="grid2" style="margin-top:6px;">
+          <select id="optWidth" title="Optimize: resize big images to this width">
+            <option value="1280">optimize → 1280px</option>
+            <option value="1920" selected>optimize → 1920px</option>
+            <option value="2560">optimize → 2560px</option>
+          </select>
+          <button class="btn" id="optimizeBtn" style="margin-top:0;background:#6a1b9a;">Optimize → JPEG</button>
+        </div>
         <div class="info" id="fileInfo">No file selected — the bundled sample image will be used.</div>
+      </div>
+
+      <div class="card span2">
+        <h2>Upload to server (no SSH)</h2>
+        <div class="grid2">
+          <div>
+            <label>Destination subfolder</label>
+            <input type="text" id="uplSubdir" placeholder="myimages" />
+          </div>
+          <div>
+            <label>Folder to upload</label>
+            <input type="file" id="uplFiles" webkitdirectory directory multiple />
+          </div>
+        </div>
+        <button class="btn" id="uploadBtn" style="margin-top:8px;background:#1565c0;">Upload to server</button>
       </div>
 
       <div class="card span2">
@@ -353,6 +395,79 @@
         : "Ready";
     };
 
+    // Validate a server folder path and show its image count.
+    $("serverFolder").onchange = async () => {
+      const path = $("serverFolder").value.trim();
+      if (!path) { $("statusLine").textContent = "Ready"; return; }
+      $("fileInput").value = ""; $("folderInput").value = ""; batchFiles = [];
+      try {
+        const r = await fetch(`/api/list_server_folder?path=${encodeURIComponent(path)}`);
+        const d = await r.json();
+        if (!r.ok || !d.ok) throw new Error(d.error || "not found");
+        $("fileInfo").textContent = `Server folder: ${d.count} images (no upload)`;
+        $("statusLine").textContent = d.count
+          ? `Ready — ${d.count} images on server. Press Run Inference.`
+          : "Folder has no images.";
+      } catch (e) {
+        $("fileInfo").textContent = "Server folder error: " + e.message;
+        $("statusLine").textContent = "Error: " + e.message;
+      }
+    };
+
+    // Server folder browser — navigate folders and pick one (no typing needed).
+    function pickServerFolder(path) {
+      $("serverFolder").value = path;
+      $("browser").style.display = "none";
+      $("serverFolder").onchange();
+    }
+    async function openBrowse(path) {
+      try {
+        const r = await fetch(`/api/browse?path=${encodeURIComponent(path || "")}`);
+        const d = await r.json();
+        if (!r.ok || !d.ok) throw new Error(d.error || "browse failed");
+        const b = $("browser");
+        b.style.display = "block";
+        b.innerHTML = "";
+        const head = document.createElement("div");
+        head.className = "br-head";
+        const p = document.createElement("span");
+        p.className = "br-path"; p.textContent = d.path; p.title = d.path;
+        const use = document.createElement("button");
+        use.className = "br-use"; use.textContent = `Use this (${d.images})`;
+        use.onclick = () => pickServerFolder(d.path);
+        head.appendChild(p); head.appendChild(use); b.appendChild(head);
+        if (d.parent) {
+          const up = document.createElement("div");
+          up.className = "br-item"; up.innerHTML = "<span>⬆ .. (up)</span>";
+          up.onclick = () => openBrowse(d.parent); b.appendChild(up);
+        }
+        if (!d.dirs.length) {
+          const e = document.createElement("div");
+          e.className = "br-item"; e.style.color = "var(--muted)";
+          e.textContent = "(no subfolders)"; b.appendChild(e);
+        }
+        d.dirs.forEach((dir) => {
+          const it = document.createElement("div");
+          it.className = "br-item";
+          it.innerHTML = `<span>📁 ${dir.name}</span><span class="br-cnt">${dir.images} imgs</span>`;
+          it.onclick = () => openBrowse(dir.path);
+          if (dir.images > 0) {
+            const pick = document.createElement("span");
+            pick.className = "br-pick"; pick.textContent = "✓ use";
+            pick.onclick = (ev) => { ev.stopPropagation(); pickServerFolder(dir.path); };
+            it.appendChild(pick);
+          }
+          b.appendChild(it);
+        });
+      } catch (e) {
+        $("statusLine").textContent = "Browse error: " + e.message;
+      }
+    }
+    $("browseBtn").onclick = () => {
+      if ($("browser").style.display === "block") { $("browser").style.display = "none"; return; }
+      openBrowse($("serverFolder").value.trim() || "");
+    };
+
     $("cropMode").onchange = () => {
       $("cropCoords").classList.toggle("show", $("cropMode").value === "manual");
     };
@@ -457,6 +572,64 @@
         $("statusLine").textContent = `Done — ${okCount}/${total} images processed`;
       }
       setBusy(false);
+    }
+
+    // Process every image in a server-side folder — no upload. Streams results
+    // via SSE and reuses the live panels + thumbnail strip.
+    async function runServerFolder(path) {
+      setBusy(true);
+      batchAbort = false;
+      batchResults = [];
+      $("resultsStrip").innerHTML = "";
+      $("resultsStrip").classList.add("show");
+      $("statusLine").textContent = "Starting server folder…";
+      videoController = new AbortController();
+      const fd = buildForm(null);          // no file
+      fd.append("folder", path);
+      fd.append("proc_width", $("procWidth").value);
+      try {
+        const res = await fetch("/api/infer_folder", { method: "POST", body: fd, signal: videoController.signal });
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try { detail = (await res.json()).error || detail; } catch (_) {}
+          $("statusLine").textContent = "Error: " + detail; setBusy(false); return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "", lastIndex = 0;
+        while (true) {
+          if (batchAbort) { videoController.abort(); break; }
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf("\n\n", lastIndex)) >= 0) {
+            const chunk = buffer.slice(lastIndex, idx).trim();
+            lastIndex = idx + 2;
+            if (!chunk.startsWith("data:")) continue;
+            let m; try { m = JSON.parse(chunk.slice(5).trim()); } catch (_) { continue; }
+            if (m.type === "status") {
+              $("statusLine").textContent = m.message;
+            } else if (m.type === "image") {
+              showImageResult(m);
+              addThumb(m.name, m, true);
+              $("progressBar").style.width = Math.round(((m.index + 1) / m.total) * 100) + "%";
+              $("statusLine").textContent = `Processing ${m.index + 1}/${m.total}: ${m.name} · ${m.elapsed}s`;
+            } else if (m.type === "image_error") {
+              addThumb(m.name, { error: m.error }, false);
+            } else if (m.type === "done") {
+              $("statusLine").textContent = `Done — ${m.count}/${m.total} images in ${m.elapsed}s (no upload)`;
+            } else if (m.type === "error") {
+              $("statusLine").textContent = "Error: " + m.error;
+            }
+          }
+          buffer = buffer.slice(lastIndex); lastIndex = 0;
+        }
+      } catch (e) {
+        if (e.name !== "AbortError") $("statusLine").textContent = "Error: " + e.message;
+      } finally {
+        setBusy(false);
+      }
     }
 
     function stopUploadTick() {
@@ -595,6 +768,8 @@
 
     $("runBtn").onclick = () => {
       if (!selectedModel) { $("statusLine").textContent = "Please select a model"; return; }
+      const serverPath = $("serverFolder").value.trim();
+      if (serverPath) { runServerFolder(serverPath); return; }
       if (batchFiles.length) { runBatch(); return; }
       const f = $("fileInput").files[0];
       const isVideo = f && /\.(mp4|avi|mov|mkv|webm|m4v)$/i.test(f.name);
@@ -607,6 +782,108 @@
       stopUploadTick();
       setBusy(false);
       $("statusLine").textContent = "Stopped";
+    };
+
+    // Upload a folder of files to a server subfolder (works over the Funnel URL,
+    // no SSH). On success, auto-fill the server folder path for inference.
+    $("uploadBtn").onclick = () => {
+      const sub = $("uplSubdir").value.trim();
+      const files = Array.from($("uplFiles").files);
+      if (!sub) { $("statusLine").textContent = "Enter a destination subfolder"; return; }
+      if (!files.length) { $("statusLine").textContent = "Select a folder to upload"; return; }
+      $("uploadBtn").disabled = true;
+      setBusy(true);
+      $("statusLine").textContent = `Uploading ${files.length} files…`;
+      const fd = new FormData();
+      fd.append("subdir", sub);
+      files.forEach((f) => fd.append("files", f, f.name));
+      const xhr = new XMLHttpRequest();
+      videoController = xhr;
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          $("progressBar").style.width = pct + "%";
+          $("statusLine").textContent =
+            `Uploading ${pct}% (${(e.loaded / 1048576).toFixed(1)}/${(e.total / 1048576).toFixed(1)} MB)`;
+        }
+      };
+      xhr.onload = () => {
+        $("uploadBtn").disabled = false;
+        setBusy(false);
+        if (xhr.status >= 400) {
+          let detail = `HTTP ${xhr.status}`;
+          try { detail = JSON.parse(xhr.responseText).error || detail; } catch (_) {}
+          $("statusLine").textContent = "Upload error: " + detail;
+          return;
+        }
+        let d = {}; try { d = JSON.parse(xhr.responseText); } catch (_) {}
+        $("statusLine").textContent =
+          `Uploaded ${d.saved} files to ${d.path}` + (d.skipped ? ` (${d.skipped} skipped)` : "");
+        if (d.path) { $("serverFolder").value = d.path; $("serverFolder").onchange(); }
+      };
+      xhr.onerror = () => {
+        $("uploadBtn").disabled = false; setBusy(false);
+        $("statusLine").textContent = "Upload error: network error";
+      };
+      xhr.open("POST", "/api/upload_to_server");
+      xhr.send(fd);
+    };
+
+    // Convert a server folder of big images to resized JPEGs (one-time), then
+    // point inference at the faster '_opt' folder.
+    async function runOptimize(path) {
+      setBusy(true);
+      batchAbort = false;
+      $("statusLine").textContent = "Optimizing folder…";
+      videoController = new AbortController();
+      const fd = new FormData();
+      fd.append("folder", path);
+      fd.append("max_width", $("optWidth").value);
+      try {
+        const res = await fetch("/api/optimize_folder", { method: "POST", body: fd, signal: videoController.signal });
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try { detail = (await res.json()).error || detail; } catch (_) {}
+          $("statusLine").textContent = "Optimize error: " + detail; setBusy(false); return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "", lastIndex = 0;
+        while (true) {
+          if (batchAbort) { videoController.abort(); break; }
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf("\n\n", lastIndex)) >= 0) {
+            const chunk = buffer.slice(lastIndex, idx).trim();
+            lastIndex = idx + 2;
+            if (!chunk.startsWith("data:")) continue;
+            let m; try { m = JSON.parse(chunk.slice(5).trim()); } catch (_) { continue; }
+            if (m.type === "status") {
+              $("statusLine").textContent = m.message;
+            } else if (m.type === "progress") {
+              $("progressBar").style.width = Math.round(((m.index + 1) / m.total) * 100) + "%";
+              $("statusLine").textContent = `Optimizing ${m.index + 1}/${m.total}: ${m.name} · ${m.elapsed}s`;
+            } else if (m.type === "done") {
+              $("statusLine").textContent = `Optimized ${m.count}/${m.total} → ${m.dest} (${m.elapsed}s). Ready to run.`;
+              if (m.dest) { $("serverFolder").value = m.dest; $("serverFolder").onchange(); }
+            } else if (m.type === "error") {
+              $("statusLine").textContent = "Error: " + m.error;
+            }
+          }
+          buffer = buffer.slice(lastIndex); lastIndex = 0;
+        }
+      } catch (e) {
+        if (e.name !== "AbortError") $("statusLine").textContent = "Error: " + e.message;
+      } finally {
+        setBusy(false);
+      }
+    }
+    $("optimizeBtn").onclick = () => {
+      const path = $("serverFolder").value.trim();
+      if (!path) { $("statusLine").textContent = "Pick/enter a server folder to optimize"; return; }
+      runOptimize(path);
     };
 
     loadInfo();
