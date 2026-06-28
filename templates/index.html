@@ -233,9 +233,24 @@
       });
     }
 
+    function resetFrames() {
+      setFrame($("origFrame"), null, "Input preview");
+      setFrame($("singleFrame"), null, "Result preview");
+      setFrame($("rnnFrame"), null, "Result preview");
+    }
+
     $("fileInput").onchange = () => {
       const f = $("fileInput").files[0];
       $("fileInfo").textContent = f ? f.name : "No file selected — the bundled sample image will be used.";
+      // On selecting a new file, clear all panels and show the chosen input
+      // image in the Original panel right away (before inference runs).
+      resetFrames();
+      $("statusLine").textContent = "Ready";
+      if (f && /\.(mp4|avi)$/i.test(f.name)) {
+        $("origFrame").textContent = "Video selected — press Run Inference";
+      } else if (f) {
+        setFrame($("origFrame"), URL.createObjectURL(f), "Input preview");
+      }
     };
 
     $("cropMode").onchange = () => {

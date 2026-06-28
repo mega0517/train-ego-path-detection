@@ -226,6 +226,9 @@ def prepare_detector(model_path, device, crop_mode, crop_coords):
 
 def run_both(img, det_single, det_rnn):
     """Compute (single_frame_vis, rnn_vis) PIL images, mirroring the desktop GUI."""
+    # Models expect 3-channel RGB; uploads may be RGBA (PNG w/ alpha), L, etc.
+    if img.mode != "RGB":
+        img = img.convert("RGB")
     single_vis = None
     rnn_vis = None
     if det_single is not None:
@@ -270,6 +273,64 @@ def pil_to_data_uri(img, fmt="JPEG"):
     encoded = base64.b64encode(buf.getvalue()).decode("ascii")
     mime = "jpeg" if fmt.upper() == "JPEG" else fmt.lower()
     return f"data:image/{mime};base64,{encoded}"
+
+
+def decode_video_frames(path):
+    """Yield (frame_index, PIL.Image RGB, total_or_None) for each video frame.
+
+    Tries OpenCV first (fast, hardware-friendly). If OpenCV cannot open the file
+    or decodes zero frames — typically because its bundled FFmpeg lacks the codec
+    (e.g. H.265/HEVC) — falls back to PyAV, which ships a fuller FFmpeg. Raises
+    ValueError with actionable guidance when neither decoder can read the file.
+    """
+    import cv2
+
+    cap = cv2.VideoCapture(path)
+    if cap.isOpened():
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or None
+        idx = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            yield idx, Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)), total
+            idx += 1
+        cap.release()
+        if idx > 0:
+            return  # OpenCV handled it
+    else:
+        cap.release()
+
+    # Fallback decoder for codecs OpenCV's FFmpeg can't handle.
+    try:
+        import av
+    except ImportError:
+        raise ValueError(
+            "Video codec unsupported by OpenCV and the PyAV fallback is not "
+            "installed (pip install av). Re-encode to H.264 mp4: "
+            "ffmpeg -i input -c:v libx264 -pix_fmt yuv420p out.mp4"
+        )
+
+    try:
+        with av.open(path) as container:
+            stream = container.streams.video[0]
+            total = stream.frames or None
+            idx = 0
+            for frame in container.decode(stream):
+                yield idx, frame.to_image(), total
+                idx += 1
+    except (av.error.FFmpegError, IndexError) as e:
+        raise ValueError(
+            f"Could not decode the video ({e}). The file may be corrupt or use an "
+            "unsupported codec. Re-encode to H.264 mp4: "
+            "ffmpeg -i input -c:v libx264 -pix_fmt yuv420p out.mp4"
+        )
+    if idx == 0:
+        raise ValueError(
+            "No frames could be decoded from the video (file may be corrupt or "
+            "an unsupported codec). Re-encode to H.264 mp4: "
+            "ffmpeg -i input -c:v libx264 -pix_fmt yuv420p out.mp4"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -366,35 +427,24 @@ def api_infer_video():
     def event_stream():
         import json
 
-        import cv2
-
         try:
             det_single, det_rnn = detectors_for_request(
                 model_name, device, crop_mode, crop_coords
             )
-            cap = cv2.VideoCapture(tmp.name)
-            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            frame_idx = 0
             emitted = 0
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
+            for frame_idx, img, total in decode_video_frames(tmp.name):
                 if frame_idx % stride == 0:
-                    img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                     single_vis, rnn_vis = run_both(img, det_single, det_rnn)
                     payload = {
                         "type": "frame",
                         "frame": frame_idx,
-                        "total": total,
+                        "total": total or 0,
                         "original": pil_to_data_uri(img),
                         "single": pil_to_data_uri(single_vis),
                         "rnn": pil_to_data_uri(rnn_vis),
                     }
                     yield f"data: {json.dumps(payload)}\n\n"
                     emitted += 1
-                frame_idx += 1
-            cap.release()
             yield f"data: {json.dumps({'type': 'done', 'frames': emitted})}\n\n"
         except Exception as e:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"

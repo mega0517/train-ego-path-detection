@@ -16,6 +16,7 @@ PyQt5
 
 # requirements for web application
 Flask
+av  # PyAV fallback decoder for codecs OpenCV can't read (e.g. H.265/HEVC)
 
 # requirements for TensorRT usage
 onnx
