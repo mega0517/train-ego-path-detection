@@ -42,6 +42,8 @@ app = Flask(__name__)
 # provided" 400.) Override via WEB_MAX_UPLOAD_MB.
 _max_upload_mb = int(os.environ.get("WEB_MAX_UPLOAD_MB", "4096"))
 app.config["MAX_CONTENT_LENGTH"] = _max_upload_mb * 1024 * 1024
+# Pick up template edits without a server restart (debug mode is off).
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 
 @app.errorhandler(413)
@@ -446,11 +448,19 @@ def api_infer_video():
 
     def event_stream():
         import json
+        import time
 
+        def sse(obj):
+            return f"data: {json.dumps(obj)}\n\n"
+
+        t0 = time.time()
         try:
+            yield sse({"type": "status",
+                       "message": f"Received {saved_mb:.1f} MB · loading model…"})
             det_single, det_rnn = detectors_for_request(
                 model_name, device, crop_mode, crop_coords
             )
+            yield sse({"type": "status", "message": "Model ready · decoding video…"})
             emitted = 0
             for frame_idx, img, total in decode_video_frames(tmp.name):
                 if frame_idx % stride == 0:
@@ -459,13 +469,16 @@ def api_infer_video():
                         "type": "frame",
                         "frame": frame_idx,
                         "total": total or 0,
+                        "emitted": emitted + 1,
+                        "elapsed": round(time.time() - t0, 1),
                         "original": pil_to_data_uri(img),
                         "single": pil_to_data_uri(single_vis),
                         "rnn": pil_to_data_uri(rnn_vis),
                     }
-                    yield f"data: {json.dumps(payload)}\n\n"
+                    yield sse(payload)
                     emitted += 1
-            yield f"data: {json.dumps({'type': 'done', 'frames': emitted})}\n\n"
+            yield sse({"type": "done", "frames": emitted,
+                       "elapsed": round(time.time() - t0, 1)})
         except Exception as e:  # noqa: BLE001
             msg = str(e)
             if "moov atom not found" in msg:
