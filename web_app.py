@@ -424,6 +424,15 @@ def api_infer_video():
     upload.save(tmp.name)
     tmp.close()
 
+    saved_size = os.path.getsize(tmp.name)
+    if saved_size == 0:
+        os.unlink(tmp.name)
+        return jsonify(
+            {"error": "Upload was empty (0 bytes). The file failed to upload — "
+                      "check your connection/file and try again."}
+        ), 400
+    saved_mb = saved_size / (1024 * 1024)
+
     def event_stream():
         import json
 
@@ -447,7 +456,18 @@ def api_infer_video():
                     emitted += 1
             yield f"data: {json.dumps({'type': 'done', 'frames': emitted})}\n\n"
         except Exception as e:  # noqa: BLE001
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            msg = str(e)
+            if "moov atom not found" in msg:
+                msg = (
+                    f"The uploaded file is incomplete or truncated (received "
+                    f"{saved_mb:.1f} MB; its mp4 index 'moov atom' is missing). "
+                    "This means the video was cut off — either the source "
+                    "recording was interrupted, or the upload did not finish. "
+                    "Check that the received size matches your original file, "
+                    "re-upload over a stable connection, or repair/re-export the "
+                    "video (e.g. ffmpeg -i input -c copy -movflags faststart out.mp4)."
+                )
+            yield f"data: {json.dumps({'type': 'error', 'error': msg})}\n\n"
         finally:
             try:
                 os.unlink(tmp.name)
