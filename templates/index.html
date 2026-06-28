@@ -39,7 +39,41 @@
       gap: 10px;
       flex-shrink: 0;
     }
+    header .tabs { display: flex; gap: 6px; margin-left: 18px; }
+    header .tab {
+      background: transparent; color: #b0bec5; border: none; cursor: pointer;
+      font-size: 14px; font-weight: 600; padding: 6px 12px; border-radius: 6px;
+    }
+    header .tab:hover { color: #fff; background: rgba(255,255,255,.08); }
+    header .tab.active { color: #fff; background: var(--accent); }
     header .status { margin-left: auto; font-size: 13px; font-weight: 400; opacity: 0.85; }
+    /* Training page */
+    .train-log {
+      flex: 1; min-height: 0; overflow-y: auto; background: #0f1720; color: #cfe3d6;
+      font-family: monospace; font-size: 12px; line-height: 1.5; padding: 10px;
+      border-radius: 8px; white-space: pre-wrap;
+    }
+    .train-log .ep { color: #7ee0a0; }
+    .train-log .err { color: #ff8a80; }
+    .metric-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+    .metric { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 14px; min-width: 120px; }
+    .metric .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+    .metric .val { font-size: 20px; font-weight: 700; }
+    /* Labeling */
+    .canvas-wrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+      background: #1b232b; border-radius: 8px; overflow: hidden; }
+    #lblCanvas { max-width: 100%; max-height: 100%; cursor: crosshair; }
+    .img-list { max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+    .img-item { display: flex; gap: 6px; padding: 5px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #f0f0f0; }
+    .img-item:hover { background: #eef6ef; }
+    .img-item.active { background: #eaf6eb; font-weight: 600; }
+    .img-item .mk { margin-left: auto; }
+    .rail-btns { display: flex; gap: 6px; }
+    .rail-btns .btn { margin-top: 0; }
+    .rail-btns .btn.lon { background: #e53935; }
+    .rail-btns .btn.ron { background: #1e88e5; }
+    .rail-btns .btn.off { background: #b0bec5; }
     .layout {
       display: flex; gap: 12px; padding: 12px; align-items: stretch;
       flex: 1; min-height: 0; overflow: hidden;
@@ -68,7 +102,7 @@
       color: var(--muted);
     }
     label { display: block; font-size: 13px; margin-bottom: 4px; }
-    select, input[type="number"], input[type="file"] {
+    select, input[type="number"], input[type="file"], input[type="text"] {
       width: 100%;
       padding: 6px;
       border: 1px solid var(--border);
@@ -178,11 +212,16 @@
 </head>
 <body>
   <header>
-    <span>🚆 TEP-Net Train Ego-Path Detection</span>
+    <span>🚆 TEP-Net</span>
+    <span class="tabs">
+      <button class="tab active" id="tabLabel">라벨링 Labeling</button>
+      <button class="tab" id="tabTrain">학습 RNN Transfer</button>
+      <button class="tab" id="tabInfer">추론 Inference</button>
+    </span>
     <span class="status" id="deviceStatus">…</span>
   </header>
 
-  <div class="layout">
+  <div class="layout" id="pageInfer" style="display:none;">
     <aside class="sidebar">
       <div class="card span2">
         <h2>Input</h2>
@@ -288,6 +327,120 @@
         </div>
       </div>
       <div class="results-strip" id="resultsStrip"></div>
+    </main>
+  </div>
+
+  <div class="layout" id="pageTrain" style="display:none;">
+    <aside class="sidebar">
+      <div class="card span2">
+        <h2>RNN Transfer Learning</h2>
+        <label>Base model (per-frame)</label>
+        <select id="trBase"></select>
+        <div class="info" id="trBaseInfo"></div>
+      </div>
+
+      <div class="card span2">
+        <h2>Dataset</h2>
+        <label>Images folder (server path)</label>
+        <div class="grid2">
+          <input type="text" id="trImages" placeholder="/data3/.../images" />
+          <button class="btn" id="trBrowseBtn" style="margin-top:0;background:#455a64;">Browse…</button>
+        </div>
+        <div class="browser" id="trBrowser" style="display:none;"></div>
+        <label style="margin-top:8px;">Annotations JSON (server path)</label>
+        <input type="text" id="trAnnots" placeholder="/data3/.../egopath.json" />
+        <div class="info" id="trDataInfo">Training needs labeled ego-path annotations, not just images.</div>
+      </div>
+
+      <div class="card">
+        <h2>Epochs</h2>
+        <input type="number" id="trEpochs" value="50" min="1" />
+      </div>
+      <div class="card">
+        <h2>Batch size</h2>
+        <input type="number" id="trBatch" value="32" min="1" />
+      </div>
+      <div class="card">
+        <h2>Learning rate</h2>
+        <input type="number" id="trLr" value="0.0001" step="0.0001" min="0" />
+      </div>
+      <div class="card">
+        <h2>Train GPU</h2>
+        <select id="trGpu"></select>
+      </div>
+
+      <div class="card span2">
+        <h2>Options</h2>
+        <label class="radio-row" style="margin-bottom:6px;">
+          <input type="checkbox" id="trFinetune" /> Fine-tune base too (default: base frozen = transfer)
+        </label>
+        <label class="radio-row">
+          <input type="checkbox" id="trGpuPre" checked /> GPU preprocessing (faster temporal training)
+        </label>
+      </div>
+
+      <button class="btn run span2" id="trStartBtn">Start training</button>
+      <button class="btn stop span2" id="trStopBtn" disabled>Stop training</button>
+      <div class="status-line span2" id="trStatus">Ready</div>
+    </aside>
+
+    <main class="main">
+      <div class="metric-row">
+        <div class="metric"><div class="lbl">Epoch</div><div class="val" id="mEpoch">—</div></div>
+        <div class="metric"><div class="lbl">Train loss</div><div class="val" id="mTrain">—</div></div>
+        <div class="metric"><div class="lbl">Val loss</div><div class="val" id="mVal">—</div></div>
+        <div class="metric"><div class="lbl">Output model</div><div class="val" id="mOut" style="font-size:14px;">—</div></div>
+      </div>
+      <div class="progress-wrap" id="trProgWrap" style="display:block;"><div class="progress-bar" id="trProgBar"></div></div>
+      <div class="train-log" id="trLog">No training run yet. Pick a base model and press “Start training”.</div>
+    </main>
+  </div>
+
+  <div class="layout" id="pageLabel">
+    <aside class="sidebar">
+      <div class="card span2">
+        <h2>Label dataset</h2>
+        <label>Images folder (server path)</label>
+        <div class="grid2">
+          <input type="text" id="lblFolder" placeholder="/data3/.../images" />
+          <button class="btn" id="lblBrowseBtn" style="margin-top:0;background:#455a64;">Browse…</button>
+        </div>
+        <div class="browser" id="lblBrowser" style="display:none;"></div>
+        <label style="margin-top:8px;">Annotations JSON (output, server path)</label>
+        <input type="text" id="lblAnnots" placeholder="auto: <folder>/egopath_labels.json" />
+        <div class="info">Pick a folder above — images load automatically.</div>
+      </div>
+
+      <div class="card span2">
+        <h2>Rail being drawn</h2>
+        <div class="rail-btns">
+          <button class="btn lon" id="lblLeftBtn" style="flex:1;">Left rail</button>
+          <button class="btn off" id="lblRightBtn" style="flex:1;">Right rail</button>
+        </div>
+        <div class="info">Click empty space to add a point · drag a node to move it · right-click a node to delete.</div>
+        <div class="rail-btns" style="margin-top:6px;">
+          <button class="btn" id="lblUndoBtn" style="flex:1;background:#6b7280;">Undo point</button>
+          <button class="btn" id="lblClearBtn" style="flex:1;background:#9e9e9e;">Clear rail</button>
+        </div>
+        <label style="margin-top:8px;">Line width: <span id="lblLwVal">5</span> px</label>
+        <input type="range" id="lblLineWidth" min="1" max="15" value="5" style="width:100%;" />
+      </div>
+
+      <button class="btn run span2" id="lblSaveBtn">Save &amp; Next →</button>
+      <div class="rail-btns span2" style="margin-top:6px;">
+        <button class="btn" id="lblPrevBtn" style="flex:1;background:#607d8b;">← Prev</button>
+        <button class="btn" id="lblNextBtn" style="flex:1;background:#607d8b;">Next →</button>
+      </div>
+      <div class="status-line span2" id="lblStatus">Set folder + annotations JSON, then Load images.</div>
+
+      <div class="card span2">
+        <h2>Images <span id="lblCount" style="color:var(--muted);font-weight:400;"></span></h2>
+        <div class="img-list" id="lblList"></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="canvas-wrap"><canvas id="lblCanvas"></canvas></div>
     </main>
   </div>
 
@@ -415,17 +568,18 @@
     };
 
     // Server folder browser — navigate folders and pick one (no typing needed).
-    function pickServerFolder(path) {
-      $("serverFolder").value = path;
-      $("browser").style.display = "none";
-      $("serverFolder").onchange();
+    // Parameterised so both the inference and training pages can reuse it.
+    function pickServerFolder(path, targetId, browserId) {
+      $(targetId).value = path;
+      $(browserId).style.display = "none";
+      if ($(targetId).onchange) $(targetId).onchange();
     }
-    async function openBrowse(path) {
+    async function openBrowse(path, targetId, browserId) {
       try {
         const r = await fetch(`/api/browse?path=${encodeURIComponent(path || "")}`);
         const d = await r.json();
         if (!r.ok || !d.ok) throw new Error(d.error || "browse failed");
-        const b = $("browser");
+        const b = $(browserId);
         b.style.display = "block";
         b.innerHTML = "";
         const head = document.createElement("div");
@@ -434,12 +588,12 @@
         p.className = "br-path"; p.textContent = d.path; p.title = d.path;
         const use = document.createElement("button");
         use.className = "br-use"; use.textContent = `Use this (${d.images})`;
-        use.onclick = () => pickServerFolder(d.path);
+        use.onclick = () => pickServerFolder(d.path, targetId, browserId);
         head.appendChild(p); head.appendChild(use); b.appendChild(head);
         if (d.parent) {
           const up = document.createElement("div");
           up.className = "br-item"; up.innerHTML = "<span>⬆ .. (up)</span>";
-          up.onclick = () => openBrowse(d.parent); b.appendChild(up);
+          up.onclick = () => openBrowse(d.parent, targetId, browserId); b.appendChild(up);
         }
         if (!d.dirs.length) {
           const e = document.createElement("div");
@@ -450,11 +604,11 @@
           const it = document.createElement("div");
           it.className = "br-item";
           it.innerHTML = `<span>📁 ${dir.name}</span><span class="br-cnt">${dir.images} imgs</span>`;
-          it.onclick = () => openBrowse(dir.path);
+          it.onclick = () => openBrowse(dir.path, targetId, browserId);
           if (dir.images > 0) {
             const pick = document.createElement("span");
             pick.className = "br-pick"; pick.textContent = "✓ use";
-            pick.onclick = (ev) => { ev.stopPropagation(); pickServerFolder(dir.path); };
+            pick.onclick = (ev) => { ev.stopPropagation(); pickServerFolder(dir.path, targetId, browserId); };
             it.appendChild(pick);
           }
           b.appendChild(it);
@@ -465,7 +619,7 @@
     }
     $("browseBtn").onclick = () => {
       if ($("browser").style.display === "block") { $("browser").style.display = "none"; return; }
-      openBrowse($("serverFolder").value.trim() || "");
+      openBrowse($("serverFolder").value.trim() || "", "serverFolder", "browser");
     };
 
     $("cropMode").onchange = () => {
@@ -884,6 +1038,342 @@
       const path = $("serverFolder").value.trim();
       if (!path) { $("statusLine").textContent = "Pick/enter a server folder to optimize"; return; }
       runOptimize(path);
+    };
+
+    // ----- Tabs -----
+    let trainOptionsLoaded = false;
+    function showPage(which) {
+      const pages = { infer: "pageInfer", label: "pageLabel", train: "pageTrain" };
+      const tabs = { infer: "tabInfer", label: "tabLabel", train: "tabTrain" };
+      Object.entries(pages).forEach(([k, id]) => { $(id).style.display = k === which ? "flex" : "none"; });
+      Object.entries(tabs).forEach(([k, id]) => { $(id).classList.toggle("active", k === which); });
+      if (which === "train" && !trainOptionsLoaded) { loadTrainOptions(); trainOptionsLoaded = true; }
+    }
+    $("tabInfer").onclick = () => showPage("infer");
+    $("tabLabel").onclick = () => showPage("label");
+    $("tabTrain").onclick = () => showPage("train");
+    $("trBrowseBtn").onclick = () => {
+      if ($("trBrowser").style.display === "block") { $("trBrowser").style.display = "none"; return; }
+      openBrowse($("trImages").value.trim() || "", "trImages", "trBrowser");
+    };
+
+    // ----- Labeling -----
+    const lbl = { images: [], idx: -1, left: [], right: [], rail: "left",
+                  origW: 1, origH: 1, dispW: 1, dispH: 1, img: new Image(), lineWidth: 5 };
+    const lblCanvas = $("lblCanvas"), lblCtx = lblCanvas.getContext("2d");
+
+    $("lblBrowseBtn").onclick = () => {
+      if ($("lblBrowser").style.display === "block") { $("lblBrowser").style.display = "none"; return; }
+      openBrowse($("lblFolder").value.trim() || "", "lblFolder", "lblBrowser");
+    };
+    function setRail(r) {
+      lbl.rail = r;
+      $("lblLeftBtn").className = "btn " + (r === "left" ? "lon" : "off");
+      $("lblRightBtn").className = "btn " + (r === "right" ? "ron" : "off");
+    }
+    $("lblLeftBtn").onclick = () => setRail("left");
+    $("lblRightBtn").onclick = () => setRail("right");
+
+    function suggestAnnots() {
+      if (!$("lblAnnots").value.trim()) {
+        const f = $("lblFolder").value.trim().replace(/\/+$/, "");
+        if (f) $("lblAnnots").value = f + "/egopath_labels.json";
+      }
+    }
+    async function loadLabelList() {
+      const folder = $("lblFolder").value.trim();
+      if (!folder) { $("lblStatus").textContent = "Set an images folder (Browse…)."; return; }
+      suggestAnnots();  // annotations path only needed to save; auto-suggest one
+      const annots = $("lblAnnots").value.trim();
+      try {
+        const d = await (await fetch(`/api/label/list?folder=${encodeURIComponent(folder)}&annots=${encodeURIComponent(annots)}`)).json();
+        if (!d.ok) throw new Error(d.error || "failed");
+        lbl.images = d.images;
+        renderImgList();
+        $("lblCount").textContent = `(${d.count}, labeled ${d.images.filter(i => i.labeled).length})`;
+        if (!d.count) {
+          $("lblStatus").textContent = "No images here — open a subfolder via Browse…";
+          lbl.idx = -1;
+          return;
+        }
+        $("lblStatus").textContent = `${d.count} images. Click one or label this first.`;
+        loadLabelImage(0);
+      } catch (e) { $("lblStatus").textContent = "Error: " + e.message; }
+    }
+    // Picking a folder via Browse fills lblFolder and fires onchange → auto-load.
+    // Also re-list when the annotations path changes (refreshes labeled marks).
+    $("lblFolder").onchange = loadLabelList;
+    $("lblAnnots").onchange = () => { if ($("lblFolder").value.trim()) loadLabelList(); };
+
+    function renderImgList() {
+      const el = $("lblList"); el.innerHTML = "";
+      lbl.images.forEach((im, i) => {
+        const it = document.createElement("div");
+        it.className = "img-item" + (i === lbl.idx ? " active" : "");
+        it.innerHTML = `<span>${im.name}</span><span class="mk">${im.labeled ? "✓" : ""}</span>`;
+        it.onclick = () => loadLabelImage(i);
+        el.appendChild(it);
+      });
+    }
+
+    async function loadLabelImage(i) {
+      if (i < 0 || i >= lbl.images.length) return;
+      lbl.idx = i;
+      const folder = $("lblFolder").value.trim(), annots = $("lblAnnots").value.trim();
+      const name = lbl.images[i].name;
+      $("lblStatus").textContent = `Loading ${name}…`;
+      const d = await (await fetch(`/api/label/image?folder=${encodeURIComponent(folder)}&name=${encodeURIComponent(name)}&annots=${encodeURIComponent(annots)}`)).json();
+      if (d.error) { $("lblStatus").textContent = "Error: " + d.error; return; }
+      lbl.origW = d.orig_w; lbl.origH = d.orig_h; lbl.dispW = d.disp_w; lbl.dispH = d.disp_h;
+      lbl.left = (d.annotation && d.annotation.left_rail) ? d.annotation.left_rail.map(p => [p[0], p[1]]) : [];
+      lbl.right = (d.annotation && d.annotation.right_rail) ? d.annotation.right_rail.map(p => [p[0], p[1]]) : [];
+      lbl.img = new Image();
+      lbl.img.onload = () => {
+        lblCanvas.width = lbl.dispW; lblCanvas.height = lbl.dispH;
+        redrawLabel();
+      };
+      lbl.img.src = d.data_uri;
+      setRail("left");
+      renderImgList();
+      $("lblStatus").textContent = `${name} (${i + 1}/${lbl.images.length}) — ${lbl.images[i].labeled ? "labeled" : "new"}`;
+    }
+
+    function o2d(p) { return [p[0] * lbl.dispW / lbl.origW, p[1] * lbl.dispH / lbl.origH]; }
+    function drawRail(pts, color) {
+      if (!pts.length) return;
+      const lw = lbl.lineWidth, r = Math.max(3, lw * 1.3);
+      lblCtx.strokeStyle = color; lblCtx.fillStyle = color; lblCtx.lineWidth = lw;
+      lblCtx.lineJoin = "round"; lblCtx.lineCap = "round";
+      lblCtx.beginPath();
+      pts.forEach((p, i) => { const [x, y] = o2d(p); i ? lblCtx.lineTo(x, y) : lblCtx.moveTo(x, y); });
+      lblCtx.stroke();
+      pts.forEach((p) => { const [x, y] = o2d(p); lblCtx.beginPath(); lblCtx.arc(x, y, r, 0, 7); lblCtx.fill(); });
+    }
+    function redrawLabel() {
+      lblCtx.clearRect(0, 0, lblCanvas.width, lblCanvas.height);
+      if (lbl.img.complete) lblCtx.drawImage(lbl.img, 0, 0, lbl.dispW, lbl.dispH);
+      drawRail(lbl.left, "#e53935");
+      drawRail(lbl.right, "#1e88e5");
+    }
+    // Mouse → display-pixel coords on the canvas.
+    function evToDisp(e) {
+      const r = lblCanvas.getBoundingClientRect();
+      return [(e.clientX - r.left) * (lblCanvas.width / r.width),
+              (e.clientY - r.top) * (lblCanvas.height / r.height)];
+    }
+    // Find the nearest existing point (either rail) within the grab radius.
+    function hitPoint(dx, dy) {
+      const grab = Math.max(8, lbl.lineWidth * 1.6);
+      let best = null, bestD = grab * grab;
+      for (const rail of ["left", "right"]) {
+        const pts = rail === "left" ? lbl.left : lbl.right;
+        pts.forEach((p, i) => {
+          const [x, y] = o2d(p);
+          const d = (x - dx) * (x - dx) + (y - dy) * (y - dy);
+          if (d <= bestD) { bestD = d; best = { rail, i }; }
+        });
+      }
+      return best;
+    }
+    let lblDrag = null;  // {rail, i} while dragging a node
+    lblCanvas.onmousedown = (e) => {
+      if (lbl.idx < 0) return;
+      const [dx, dy] = evToDisp(e);
+      const hit = hitPoint(dx, dy);
+      if (hit) { lblDrag = hit; return; }            // grab existing node to move it
+      // Empty space → add a new point to the current rail.
+      const ox = Math.round(dx * lbl.origW / lbl.dispW), oy = Math.round(dy * lbl.origH / lbl.dispH);
+      (lbl.rail === "left" ? lbl.left : lbl.right).push([ox, oy]);
+      redrawLabel();
+    };
+    lblCanvas.onmousemove = (e) => {
+      const [dx, dy] = evToDisp(e);
+      if (lblDrag) {
+        const pts = lblDrag.rail === "left" ? lbl.left : lbl.right;
+        pts[lblDrag.i] = [Math.round(dx * lbl.origW / lbl.dispW),
+                          Math.round(dy * lbl.origH / lbl.dispH)];
+        redrawLabel();
+      } else {
+        lblCanvas.style.cursor = hitPoint(dx, dy) ? "move" : "crosshair";
+      }
+    };
+    function endDrag() { lblDrag = null; }
+    lblCanvas.onmouseup = endDrag;
+    lblCanvas.onmouseleave = endDrag;
+    // Right-click a node to delete it (handy for fixing mistakes).
+    lblCanvas.oncontextmenu = (e) => {
+      e.preventDefault();
+      if (lbl.idx < 0) return;
+      const [dx, dy] = evToDisp(e);
+      const hit = hitPoint(dx, dy);
+      if (hit) {
+        (hit.rail === "left" ? lbl.left : lbl.right).splice(hit.i, 1);
+        redrawLabel();
+      }
+    };
+    $("lblUndoBtn").onclick = () => { (lbl.rail === "left" ? lbl.left : lbl.right).pop(); redrawLabel(); };
+    $("lblClearBtn").onclick = () => { if (lbl.rail === "left") lbl.left = []; else lbl.right = []; redrawLabel(); };
+    $("lblLineWidth").oninput = () => {
+      lbl.lineWidth = parseInt($("lblLineWidth").value, 10);
+      $("lblLwVal").textContent = lbl.lineWidth;
+      redrawLabel();
+    };
+
+    async function saveLabel() {
+      if (lbl.idx < 0) return false;
+      if (lbl.left.length < 2 || lbl.right.length < 2) {
+        $("lblStatus").textContent = "Each rail needs at least 2 points."; return false;
+      }
+      const fd = new FormData();
+      fd.append("annots", $("lblAnnots").value.trim());
+      fd.append("name", lbl.images[lbl.idx].name);
+      fd.append("left_rail", JSON.stringify(lbl.left));
+      fd.append("right_rail", JSON.stringify(lbl.right));
+      const d = await (await fetch("/api/label/save", { method: "POST", body: fd })).json();
+      if (d.error) { $("lblStatus").textContent = "Save error: " + d.error; return false; }
+      lbl.images[lbl.idx].labeled = true; renderImgList();
+      $("lblCount").textContent = `(${lbl.images.length}, labeled ${d.labeled_count})`;
+      return true;
+    }
+    $("lblSaveBtn").onclick = async () => { if (await saveLabel()) { $("lblStatus").textContent = "Saved ✓"; loadLabelImage(lbl.idx + 1); } };
+    $("lblPrevBtn").onclick = () => loadLabelImage(lbl.idx - 1);
+    $("lblNextBtn").onclick = () => loadLabelImage(lbl.idx + 1);
+
+    // ----- Training -----
+    let trainController = null;
+    async function loadTrainOptions() {
+      try {
+        const d = await (await fetch("/api/train/options")).json();
+        const sel = $("trBase"); sel.innerHTML = "";
+        d.base_models.forEach((m) => {
+          const o = document.createElement("option");
+          o.value = m.name; o.textContent = `${m.name} (${m.method}/${m.backbone})`;
+          o.dataset.method = m.method || "";
+          sel.appendChild(o);
+        });
+        sel.onchange = () => {
+          const method = (sel.selectedOptions[0] || {}).dataset?.method || "";
+          const reg = method === "regression";
+          // GPU preprocessing is regression-only on the training side.
+          $("trGpuPre").disabled = !reg;
+          if (!reg) $("trGpuPre").checked = false;
+          $("trBaseInfo").textContent = reg
+            ? "RNN trained on this base → saved as <base>RNN. GPU preprocessing available."
+            : `RNN trained on this base → saved as <base>RNN. GPU preprocessing is regression-only (disabled for ${method}).`;
+        };
+        sel.onchange();
+        $("trBaseInfo").textContent = d.base_models.length
+          ? "RNN will be trained on top of this base and saved as <base>RNN."
+          : "No base models found.";
+        const g = $("trGpu"); g.innerHTML = "";
+        d.gpus.forEach((gp) => {
+          const o = document.createElement("option");
+          o.value = gp.uuid; o.textContent = `GPU ${gp.index} (${gp.mem_used} MiB used)`;
+          g.appendChild(o);
+        });
+        if (!d.gpus.length) { const o = document.createElement("option"); o.value=""; o.textContent="(auto)"; g.appendChild(o); }
+        $("trEpochs").value = d.defaults.epochs;
+        $("trBatch").value = d.defaults.batch_size;
+        $("trLr").value = d.defaults.learning_rate;
+        $("trImages").value = d.defaults.images_path || "";
+        $("trAnnots").value = d.defaults.annotations_path || "";
+        checkTrainStatus();
+      } catch (e) {
+        $("trStatus").textContent = "Failed to load options: " + e.message;
+      }
+    }
+
+    function setTrainBusy(busy) {
+      $("trStartBtn").disabled = busy;
+      $("trStopBtn").disabled = !busy;
+    }
+    function appendLog(line, cls) {
+      const el = $("trLog");
+      if (el.dataset.fresh !== "1") { el.textContent = ""; el.dataset.fresh = "1"; }
+      const span = document.createElement("span");
+      if (cls) span.className = cls;
+      span.textContent = line + "\n";
+      el.appendChild(span);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    async function checkTrainStatus() {
+      try {
+        const s = await (await fetch("/api/train/status")).json();
+        if (s.output) $("mOut").textContent = s.output;
+        if (s.running) { setTrainBusy(true); $("trStatus").textContent = "Training in progress…"; streamTrain(); }
+      } catch (_) {}
+    }
+
+    function streamTrain() {
+      trainController = new AbortController();
+      fetch("/api/train/stream", { signal: trainController.signal }).then(async (res) => {
+        if (!res.ok) { $("trStatus").textContent = "No active training."; setTrainBusy(false); return; }
+        const reader = res.body.getReader(); const dec = new TextDecoder();
+        let buf = "", li = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf("\n\n", li)) >= 0) {
+            const chunk = buf.slice(li, idx).trim(); li = idx + 2;
+            if (!chunk.startsWith("data:")) continue;
+            let m; try { m = JSON.parse(chunk.slice(5).trim()); } catch (_) { continue; }
+            if (m.type === "epoch") {
+              $("mEpoch").textContent = `${m.epoch}/${m.total}`;
+              $("mTrain").textContent = m.train_loss.toFixed(4);
+              $("mVal").textContent = m.val_loss.toFixed(4);
+              $("trProgBar").style.width = Math.round((m.epoch / m.total) * 100) + "%";
+              appendLog(`EPOCH ${m.epoch}/${m.total} | train ${m.train_loss.toFixed(4)} | val ${m.val_loss.toFixed(4)}`, "ep");
+            } else if (m.type === "log") {
+              appendLog(m.line, /error|traceback|exception/i.test(m.line) ? "err" : "");
+            } else if (m.type === "done") {
+              $("trStatus").textContent = m.code === 0 ? "Training finished ✓" : `Training ended (code ${m.code})`;
+              setTrainBusy(false);
+            }
+          }
+          buf = buf.slice(li); li = 0;
+        }
+      }).catch((e) => { if (e.name !== "AbortError") $("trStatus").textContent = "Stream error: " + e.message; setTrainBusy(false); });
+    }
+
+    $("trStartBtn").onclick = async () => {
+      const base = $("trBase").value;
+      if (!base) { $("trStatus").textContent = "Pick a base model"; return; }
+      setTrainBusy(true);
+      $("trLog").dataset.fresh = "0";
+      $("trStatus").textContent = "Starting…";
+      const fd = new FormData();
+      fd.append("base_model", base);
+      fd.append("epochs", $("trEpochs").value);
+      fd.append("batch_size", $("trBatch").value);
+      fd.append("learning_rate", $("trLr").value);
+      fd.append("gpu_uuid", $("trGpu").value);
+      fd.append("finetune_base", $("trFinetune").checked ? "true" : "false");
+      fd.append("gpu_preprocess", $("trGpuPre").checked ? "true" : "false");
+      fd.append("images_path", $("trImages").value.trim());
+      fd.append("annotations_path", $("trAnnots").value.trim());
+      try {
+        const res = await fetch("/api/train/start", { method: "POST", body: fd });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error || "start failed");
+        $("mOut").textContent = d.output;
+        $("trStatus").textContent = "Training started → " + d.output;
+        appendLog("$ " + d.cmd, "");
+        streamTrain();
+      } catch (e) {
+        $("trStatus").textContent = "Error: " + e.message;
+        setTrainBusy(false);
+      }
+    };
+
+    $("trStopBtn").onclick = async () => {
+      $("trStatus").textContent = "Stopping…";
+      if (trainController) trainController.abort();
+      try { await fetch("/api/train/stop", { method: "POST" }); } catch (_) {}
+      setTrainBusy(false);
+      $("trStatus").textContent = "Stopped";
     };
 
     loadInfo();

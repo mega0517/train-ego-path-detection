@@ -18,6 +18,8 @@ import base64
 import hmac
 import io
 import os
+import subprocess
+import sys
 import threading
 
 import torch
@@ -928,6 +930,300 @@ def api_infer_folder():
             yield sse({"type": "error", "error": str(e)})
         finally:
             ex.shutdown(wait=False, cancel_futures=True)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Ego-path labeling (create training annotations in the browser)
+# --------------------------------------------------------------------------- #
+_LABEL_DISPLAY_W = 1280  # images are sent downscaled to this width for labeling
+
+
+def _annots_path_ok(path):
+    """Annotations JSON must sit under the workspace or a data root (writable)."""
+    rp = os.path.realpath(path)
+    roots = [os.path.realpath(BASE_PATH),
+             os.path.realpath(_BROWSE_ROOT), os.path.realpath(_UPLOAD_ROOT)]
+    return any(rp == r or rp.startswith(r + os.sep) for r in roots)
+
+
+def _load_annotations(path):
+    if path and os.path.isfile(path):
+        try:
+            import json
+            with open(path) as f:
+                return json.load(f) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
+
+@app.route("/api/label/list")
+def api_label_list():
+    folder = (request.args.get("folder") or "").strip()
+    annots = (request.args.get("annots") or "").strip()
+    files = list_folder_images(folder)
+    if files is None:
+        return jsonify({"ok": False, "error": f"Not a folder: {folder or '(empty)'}"}), 400
+    labeled = set(_load_annotations(annots).keys())
+    return jsonify({"ok": True, "count": len(files),
+                    "images": [{"name": n, "labeled": n in labeled} for n in files]})
+
+
+@app.route("/api/label/image")
+def api_label_image():
+    folder = (request.args.get("folder") or "").strip()
+    name = os.path.basename((request.args.get("name") or "").strip())
+    fp = os.path.join(folder, name)
+    if not name or not os.path.isfile(fp):
+        return jsonify({"error": "Image not found."}), 400
+    try:
+        img = Image.open(fp)
+        img.load()
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": f"Could not read image: {e}"}), 400
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    ow, oh = img.size
+    disp, scale = downscale_to_width(img, _LABEL_DISPLAY_W)
+    annot = _load_annotations((request.args.get("annots") or "").strip()).get(name)
+    return jsonify({
+        "name": name, "orig_w": ow, "orig_h": oh,
+        "disp_w": disp.size[0], "disp_h": disp.size[1],
+        "data_uri": pil_to_data_uri(disp, quality=85),
+        "annotation": annot,
+    })
+
+
+@app.route("/api/label/save", methods=["POST"])
+def api_label_save():
+    import json
+    annots = (request.form.get("annots") or "").strip()
+    name = os.path.basename((request.form.get("name") or "").strip())
+    if not annots or not name:
+        return jsonify({"error": "Missing annotations path or image name."}), 400
+    if not annots.lower().endswith(".json") or not _annots_path_ok(annots):
+        return jsonify({"error": "Annotations must be a .json under the workspace/data root."}), 400
+    try:
+        left = json.loads(request.form.get("left_rail") or "[]")
+        right = json.loads(request.form.get("right_rail") or "[]")
+    except ValueError:
+        return jsonify({"error": "Invalid rail coordinates."}), 400
+    if len(left) < 2 or len(right) < 2:
+        return jsonify({"error": "Each rail needs at least 2 points."}), 400
+
+    data = _load_annotations(annots)
+    data[name] = {
+        "left_rail": [[int(x), int(y)] for x, y in left],
+        "right_rail": [[int(x), int(y)] for x, y in right],
+    }
+    os.makedirs(os.path.dirname(annots) or ".", exist_ok=True)
+    tmp = annots + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, annots)
+    return jsonify({"ok": True, "labeled_count": len(data)})
+
+
+@app.route("/api/label/delete", methods=["POST"])
+def api_label_delete():
+    import json
+    annots = (request.form.get("annots") or "").strip()
+    name = os.path.basename((request.form.get("name") or "").strip())
+    if not _annots_path_ok(annots):
+        return jsonify({"error": "Invalid annotations path."}), 400
+    data = _load_annotations(annots)
+    if name in data:
+        del data[name]
+        tmp = annots + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, annots)
+    return jsonify({"ok": True, "labeled_count": len(data)})
+
+
+# --------------------------------------------------------------------------- #
+# RNN transfer-learning training
+# --------------------------------------------------------------------------- #
+_train_lock = threading.Lock()
+_train = {"proc": None, "log": None, "args": None, "output": None}
+
+
+def list_full_gpus():
+    """Non-MIG GPUs as [{index, uuid, mem_used}], for the training device picker."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,uuid,memory.used,mig.mode.current",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+    except Exception:  # noqa: BLE001
+        return []
+    gpus = []
+    for line in out.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 4 and parts[3] != "Enabled":
+            gpus.append({"index": int(parts[0]), "uuid": parts[1], "mem_used": int(parts[2])})
+    return gpus
+
+
+@app.route("/api/train/options")
+def api_train_options():
+    bases = [
+        {"name": e["name"], **(e["base_info"] or {})}
+        for e in discover_models() if e["base_path"] and e["base_info"]
+    ]
+    images_path = annotations_path = ""
+    try:
+        with open(os.path.join(BASE_PATH, "configs", "global.yaml")) as f:
+            g = yaml.safe_load(f) or {}
+        images_path = g.get("images_path", "")
+        annotations_path = g.get("annotations_path", "")
+    except Exception:  # noqa: BLE001
+        pass
+    return jsonify({
+        "base_models": bases,
+        "gpus": list_full_gpus(),
+        "defaults": {
+            "epochs": 50, "learning_rate": 0.0001, "batch_size": 32,
+            "images_path": images_path, "annotations_path": annotations_path,
+        },
+    })
+
+
+@app.route("/api/train/status")
+def api_train_status():
+    p = _train.get("proc")
+    return jsonify({
+        "running": bool(p and p.poll() is None),
+        "args": _train.get("args"),
+        "output": _train.get("output"),
+        "returncode": (p.returncode if p and p.poll() is not None else None),
+    })
+
+
+@app.route("/api/train/start", methods=["POST"])
+def api_train_start():
+    with _train_lock:
+        p = _train.get("proc")
+        if p and p.poll() is None:
+            return jsonify({"error": "A training run is already in progress."}), 409
+
+        base = (request.form.get("base_model") or "").strip()
+        entry = next((e for e in discover_models()
+                      if e["name"] == base and e["base_path"]), None)
+        if entry is None:
+            return jsonify({"error": f"Unknown base model: {base}"}), 400
+        info = entry["base_info"] or {}
+        method = info.get("method", "regression")
+        backbone = info.get("backbone", "resnet18")
+        try:
+            epochs = int(request.form.get("epochs", 50))
+            lr = float(request.form.get("learning_rate", 0.0001))
+            batch = int(request.form.get("batch_size", 32))
+        except ValueError:
+            return jsonify({"error": "Invalid hyperparameter value."}), 400
+        finetune = request.form.get("finetune_base") == "true"
+        gpu_pre = request.form.get("gpu_preprocess") == "true"
+        gpu_uuid = (request.form.get("gpu_uuid") or "").strip()
+
+        images_path = (request.form.get("images_path") or "").strip()
+        annotations_path = (request.form.get("annotations_path") or "").strip()
+        if images_path and not os.path.isdir(images_path):
+            return jsonify({"error": f"Images folder not found: {images_path}"}), 400
+        if annotations_path:
+            if not os.path.isfile(annotations_path):
+                return jsonify({"error": f"Annotations file not found: {annotations_path}"}), 400
+            if not annotations_path.lower().endswith(".json"):
+                return jsonify({"error": "Annotations must be a .json file."}), 400
+
+        cmd = [sys.executable, "train.py", method, backbone,
+               "--temporal", "--base-model", base, "--device", "cuda:0",
+               "--epochs", str(epochs), "--learning-rate", str(lr),
+               "--batch-size", str(batch)]
+        if images_path:
+            cmd += ["--images-path", images_path]
+        if annotations_path:
+            cmd += ["--annotations-path", annotations_path]
+        if finetune:
+            cmd.append("--finetune-base")
+        # GPU preprocessing is only implemented for the regression method.
+        if gpu_pre and method == "regression":
+            cmd.append("--gpu-preprocess")
+
+        env = os.environ.copy()
+        if gpu_uuid:
+            env["CUDA_VISIBLE_DEVICES"] = gpu_uuid  # pin training to one full GPU
+        log_path = os.path.join(BASE_PATH, "train_web.log")
+        logf = open(log_path, "w")
+        proc = subprocess.Popen(cmd, cwd=BASE_PATH, stdout=logf,
+                                stderr=subprocess.STDOUT, env=env)
+        _train.update({
+            "proc": proc, "log": log_path, "logf": logf,
+            "output": f"{base}RNN",
+            "args": {"base": base, "method": method, "backbone": backbone,
+                     "epochs": epochs, "lr": lr, "batch": batch,
+                     "finetune": finetune, "gpu_preprocess": gpu_pre},
+        })
+    return jsonify({"ok": True, "output": f"{base}RNN", "cmd": " ".join(cmd)})
+
+
+@app.route("/api/train/stop", methods=["POST"])
+def api_train_stop():
+    p = _train.get("proc")
+    if p and p.poll() is None:
+        p.terminate()
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+        return jsonify({"ok": True, "stopped": True})
+    return jsonify({"ok": True, "stopped": False})
+
+
+@app.route("/api/train/stream")
+def api_train_stream():
+    log_path = _train.get("log")
+    if not log_path or not os.path.exists(log_path):
+        return jsonify({"error": "No training run yet."}), 400
+
+    def event_stream():
+        import json
+        import re
+        import time
+
+        def sse(obj):
+            return f"data: {json.dumps(obj)}\n\n"
+
+        epoch_re = re.compile(
+            r"EPOCH (\d+)/(\d+) \| TRAIN LOSS: ([0-9.]+) \| VAL LOSS: ([0-9.]+)")
+        with open(log_path) as f:
+            while True:
+                line = f.readline()
+                if line:
+                    m = epoch_re.search(line)
+                    if m:
+                        yield sse({"type": "epoch", "epoch": int(m.group(1)),
+                                   "total": int(m.group(2)),
+                                   "train_loss": float(m.group(3)),
+                                   "val_loss": float(m.group(4))})
+                    elif line.strip():
+                        yield sse({"type": "log", "line": line.strip()})
+                else:
+                    p = _train.get("proc")
+                    if p is None or p.poll() is not None:
+                        for rl in f.read().splitlines():
+                            if rl.strip():
+                                yield sse({"type": "log", "line": rl.strip()})
+                        yield sse({"type": "done",
+                                   "code": p.returncode if p else None})
+                        break
+                    time.sleep(0.5)
 
     return Response(
         stream_with_context(event_stream()),

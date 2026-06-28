@@ -81,6 +81,16 @@ def parse_arguments():
         action="store_true",
         help="Offload JPEG decode/crop/resize/jitter/flip to the GPU (temporal training only). Dataloader workers only read raw file bytes, freeing CPU cores.",
     )
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Override the number of epochs from the method config.")
+    parser.add_argument("--learning-rate", type=float, default=None,
+                        help="Override the learning rate from the method config.")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Override the batch size from the method config.")
+    parser.add_argument("--images-path", type=str, default=None,
+                        help="Override the images directory from the global config.")
+    parser.add_argument("--annotations-path", type=str, default=None,
+                        help="Override the annotations JSON from the global config.")
     return parser.parse_args()
 
 
@@ -147,6 +157,18 @@ def main(args):
             "\n[gpu-preprocess] --gpu-preprocess only applies to --temporal training; "
             "ignoring for the per-frame run."
         )
+
+    # Optional per-run hyperparameter overrides (used by the web training UI).
+    if args.epochs is not None:
+        config["epochs"] = args.epochs
+    if args.learning_rate is not None:
+        config["learning_rate"] = args.learning_rate
+    if args.batch_size is not None:
+        config["batch_size"] = args.batch_size
+    if args.images_path is not None:
+        config["images_path"] = args.images_path
+    if args.annotations_path is not None:
+        config["annotations_path"] = args.annotations_path
 
     set_seeds(config["seed"])  # set random state
     with open(config["annotations_path"]) as json_file:

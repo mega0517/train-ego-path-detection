@@ -27,3 +27,6 @@ _workspace/
 
 # Web app persistent video upload cache
 .video_cache/
+
+# Web app training log
+train_web.log
