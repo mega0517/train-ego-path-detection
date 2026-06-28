@@ -14,6 +14,9 @@ opencv-python
 # requirements for GUI application
 PyQt5
 
+# requirements for web application
+Flask
+
 # requirements for TensorRT usage
 onnx
 onnxruntime

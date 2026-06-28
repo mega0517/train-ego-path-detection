@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TEP-Net Train Ego-Path Detection</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --panel: #ffffff;
+      --border: #d9dde2;
+      --accent: #4CAF50;
+      --accent-dark: #3d8b40;
+      --danger: #f44336;
+      --text: #1f2933;
+      --muted: #6b7280;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      background: #263238;
+      color: #fff;
+      padding: 14px 22px;
+      font-size: 18px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    header .status { margin-left: auto; font-size: 13px; font-weight: 400; opacity: 0.85; }
+    .layout { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
+    .sidebar { width: 340px; flex-shrink: 0; }
+    .main { flex: 1; min-width: 0; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+    .card h2 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+    label { display: block; font-size: 13px; margin-bottom: 6px; }
+    select, input[type="number"], input[type="file"] {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 13px;
+      background: #fff;
+    }
+    .model-list { max-height: 260px; overflow-y: auto; }
+    .model-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 9px; border: 1px solid var(--border);
+      border-radius: 6px; margin-bottom: 6px; cursor: pointer;
+      font-size: 13px; transition: all .12s;
+    }
+    .model-item:hover { border-color: var(--accent); }
+    .model-item.selected { border-color: var(--accent); background: #eaf6eb; }
+    .model-item .name { font-weight: 600; }
+    .model-item .badge {
+      margin-left: auto; font-size: 11px; padding: 2px 7px; border-radius: 10px;
+      background: #e0e0e0; color: #555;
+    }
+    .model-item .badge.rnn { background: #d6e9ff; color: #1565c0; }
+    .model-item .badge.off { background: #f0f0f0; color: #bbb; }
+    .crop-coords { display: none; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+    .crop-coords.show { display: grid; }
+    .crop-coords label { font-size: 12px; margin-bottom: 3px; }
+    .btn {
+      width: 100%; padding: 11px; border: none; border-radius: 6px;
+      font-size: 14px; font-weight: 600; cursor: pointer; color: #fff;
+      margin-top: 4px;
+    }
+    .btn.run { background: var(--accent); }
+    .btn.run:hover { background: var(--accent-dark); }
+    .btn.stop { background: var(--danger); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .info { font-size: 12px; color: var(--muted); margin-top: 8px; white-space: pre-line; }
+    .progress-wrap { margin-top: 10px; height: 8px; background: #e0e0e0; border-radius: 4px; overflow: hidden; display: none; }
+    .progress-bar { height: 100%; width: 0%; background: var(--accent); transition: width .15s; }
+    .status-line { margin-top: 10px; font-size: 13px; color: var(--text); }
+    .previews { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .preview-col { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+    .preview-col h3 { margin: 0 0 8px; text-align: center; font-size: 14px; }
+    .preview-col .frame {
+      width: 100%; min-height: 320px; background: #fafafa;
+      border: 1px dashed #ccc; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      color: #aaa; font-size: 13px; overflow: hidden;
+    }
+    .preview-col img { max-width: 100%; max-height: 70vh; display: block; }
+    .radio-row { display: flex; gap: 14px; }
+    .radio-row label { display: flex; align-items: center; gap: 5px; margin: 0; }
+    @media (max-width: 1100px) {
+      .layout { flex-direction: column; }
+      .sidebar { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <span>🚆 TEP-Net Train Ego-Path Detection</span>
+    <span class="status" id="deviceStatus">…</span>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="card">
+        <h2>Input</h2>
+        <label>Image or video file</label>
+        <input type="file" id="fileInput" accept="image/*,video/mp4,video/avi,.avi" />
+        <div class="info" id="fileInfo">No file selected — the bundled sample image will be used.</div>
+      </div>
+
+      <div class="card">
+        <h2>Model</h2>
+        <div class="model-list" id="modelList">Loading…</div>
+      </div>
+
+      <div class="card">
+        <h2>Device</h2>
+        <select id="deviceSelect"></select>
+      </div>
+
+      <div class="card">
+        <h2>Crop</h2>
+        <select id="cropMode">
+          <option value="none">None</option>
+          <option value="auto">Auto</option>
+          <option value="manual">Manual</option>
+        </select>
+        <div class="crop-coords" id="cropCoords">
+          <div><label>Left (x)</label><input type="number" id="cropLeft" value="0" min="0" /></div>
+          <div><label>Top (y)</label><input type="number" id="cropTop" value="0" min="0" /></div>
+          <div><label>Right (x)</label><input type="number" id="cropRight" value="1369" min="0" /></div>
+          <div><label>Bottom (y)</label><input type="number" id="cropBottom" value="1079" min="0" /></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Video options</h2>
+        <label>Frame stride (process every N-th frame)</label>
+        <input type="number" id="stride" value="1" min="1" />
+      </div>
+
+      <button class="btn run" id="runBtn">Run Inference</button>
+      <button class="btn stop" id="stopBtn" disabled style="margin-top:8px;">Stop</button>
+      <div class="progress-wrap" id="progressWrap"><div class="progress-bar" id="progressBar"></div></div>
+      <div class="status-line" id="statusLine">Ready</div>
+    </aside>
+
+    <main class="main">
+      <div class="previews">
+        <div class="preview-col">
+          <h3>원본 (Original)</h3>
+          <div class="frame" id="origFrame">Input preview</div>
+        </div>
+        <div class="preview-col">
+          <h3>단일 프레임 (Single-frame)</h3>
+          <div class="frame" id="singleFrame">Result preview</div>
+        </div>
+        <div class="preview-col">
+          <h3>RNN (Temporal)</h3>
+          <div class="frame" id="rnnFrame">Result preview</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let selectedModel = null;
+    let videoController = null;
+
+    function setFrame(el, src, placeholder) {
+      if (src) {
+        el.innerHTML = "";
+        const img = new Image();
+        img.src = src;
+        el.appendChild(img);
+      } else {
+        el.textContent = placeholder;
+      }
+    }
+
+    async function loadInfo() {
+      const res = await fetch("/api/info");
+      const data = await res.json();
+      $("deviceStatus").textContent = data.device_status;
+
+      const dev = $("deviceSelect");
+      dev.innerHTML = "";
+      data.devices.forEach((d) => {
+        const opt = document.createElement("option");
+        opt.value = d; opt.textContent = d;
+        if (d === data.default_device) opt.selected = true;
+        dev.appendChild(opt);
+      });
+
+      const list = $("modelList");
+      list.innerHTML = "";
+      if (!data.models.length) {
+        list.textContent = "No models found";
+        return;
+      }
+      data.models.forEach((m, i) => {
+        const item = document.createElement("div");
+        item.className = "model-item";
+        const info = m.base_info || m.rnn_info || {};
+        item.innerHTML =
+          `<span class="name">${m.name}</span>` +
+          `<span style="color:var(--muted);font-size:11px;">${info.method || ""}/${info.backbone || ""}</span>` +
+          `<span class="badge ${m.rnn_path ? "rnn" : "off"}">RNN</span>`;
+        item.onclick = () => {
+          selectedModel = m.name;
+          document.querySelectorAll(".model-item").forEach((e) => e.classList.remove("selected"));
+          item.classList.add("selected");
+        };
+        list.appendChild(item);
+        if (i === 0) item.click();
+      });
+    }
+
+    $("fileInput").onchange = () => {
+      const f = $("fileInput").files[0];
+      $("fileInfo").textContent = f ? f.name : "No file selected — the bundled sample image will be used.";
+    };
+
+    $("cropMode").onchange = () => {
+      $("cropCoords").classList.toggle("show", $("cropMode").value === "manual");
+    };
+
+    function buildForm() {
+      const fd = new FormData();
+      fd.append("model", selectedModel);
+      fd.append("device", $("deviceSelect").value);
+      fd.append("crop_mode", $("cropMode").value);
+      if ($("cropMode").value === "manual") {
+        fd.append("crop_left", $("cropLeft").value);
+        fd.append("crop_top", $("cropTop").value);
+        fd.append("crop_right", $("cropRight").value);
+        fd.append("crop_bottom", $("cropBottom").value);
+      }
+      const f = $("fileInput").files[0];
+      if (f) fd.append("file", f);
+      return fd;
+    }
+
+    function setBusy(busy) {
+      $("runBtn").disabled = busy;
+      $("stopBtn").disabled = !busy;
+      $("progressWrap").style.display = busy ? "block" : "none";
+      if (!busy) $("progressBar").style.width = "0%";
+    }
+
+    async function runImage() {
+      setBusy(true);
+      $("statusLine").textContent = "Running inference…";
+      try {
+        const res = await fetch("/api/infer_image", { method: "POST", body: buildForm() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Inference failed");
+        setFrame($("origFrame"), data.original, "Input preview");
+        setFrame($("singleFrame"), data.single,
+          data.single_is_fallback ? "Single-frame (RNN base net)" : "Result preview");
+        setFrame($("rnnFrame"), data.rnn, data.has_rnn ? "Result preview" : "No RNN model");
+        $("statusLine").textContent = "Inference complete!";
+      } catch (e) {
+        $("statusLine").textContent = "Error: " + e.message;
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function runVideo() {
+      setBusy(true);
+      $("statusLine").textContent = "Processing video…";
+      videoController = new AbortController();
+      fetch("/api/infer_video", { method: "POST", body: buildForm(), signal: videoController.signal })
+        .then((res) => {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          function pump() {
+            return reader.read().then(({ done, value }) => {
+              if (done) { setBusy(false); return; }
+              buffer += decoder.decode(value, { stream: true });
+              let idx;
+              while ((idx = buffer.indexOf("\n\n")) >= 0) {
+                const chunk = buffer.slice(0, idx).trim();
+                buffer = buffer.slice(idx + 2);
+                if (!chunk.startsWith("data:")) continue;
+                const msg = JSON.parse(chunk.slice(5).trim());
+                if (msg.type === "frame") {
+                  setFrame($("origFrame"), msg.original, "Input preview");
+                  setFrame($("singleFrame"), msg.single, "Result preview");
+                  setFrame($("rnnFrame"), msg.rnn, "Result preview");
+                  const pct = msg.total ? Math.round(((msg.frame + 1) / msg.total) * 100) : 0;
+                  $("progressBar").style.width = pct + "%";
+                  $("statusLine").textContent = `Processing frame ${msg.frame + 1}/${msg.total}`;
+                } else if (msg.type === "done") {
+                  $("statusLine").textContent = `Done — ${msg.frames} frames processed`;
+                  setBusy(false);
+                } else if (msg.type === "error") {
+                  $("statusLine").textContent = "Error: " + msg.error;
+                  setBusy(false);
+                }
+              }
+              return pump();
+            });
+          }
+          return pump();
+        })
+        .catch((e) => {
+          if (e.name !== "AbortError") $("statusLine").textContent = "Error: " + e.message;
+          setBusy(false);
+        });
+    }
+
+    $("runBtn").onclick = () => {
+      if (!selectedModel) { $("statusLine").textContent = "Please select a model"; return; }
+      const f = $("fileInput").files[0];
+      const isVideo = f && /\.(mp4|avi)$/i.test(f.name);
+      if (isVideo) runVideo(); else runImage();
+    };
+
+    $("stopBtn").onclick = () => {
+      if (videoController) videoController.abort();
+      setBusy(false);
+      $("statusLine").textContent = "Stopped";
+    };
+
+    loadInfo();
+  </script>
+</body>
+</html>
