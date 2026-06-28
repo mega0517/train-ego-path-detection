@@ -15,6 +15,7 @@ then open http://<host>:5000 in a browser.
 
 import argparse
 import base64
+import hmac
 import io
 import os
 import threading
@@ -38,6 +39,43 @@ SUPPORTED_VIDEO_EXTENSIONS = (".mp4", ".avi")
 app = Flask(__name__)
 # Videos can be large; allow up to 512 MB uploads.
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
+
+# --------------------------------------------------------------------------- #
+# Optional HTTP Basic Auth
+# --------------------------------------------------------------------------- #
+# Credentials come from the environment (or --auth-user/--auth-pass), never
+# hardcoded. Auth is enabled only when a non-empty password is configured, so
+# trusted LAN use keeps working without credentials while a public Funnel/tunnel
+# exposure can be locked down by setting WEB_AUTH_PASS.
+AUTH_USER = os.environ.get("WEB_AUTH_USER", "admin")
+AUTH_PASS = os.environ.get("WEB_AUTH_PASS", "")
+
+
+def auth_enabled():
+    return bool(AUTH_PASS)
+
+
+def _credentials_ok(user, password):
+    """Constant-time comparison to avoid leaking length/contents via timing."""
+    if user is None or password is None:
+        return False
+    user_ok = hmac.compare_digest(user, AUTH_USER)
+    pass_ok = hmac.compare_digest(password, AUTH_PASS)
+    return user_ok and pass_ok
+
+
+@app.before_request
+def _require_auth():
+    if not auth_enabled():
+        return None
+    auth = request.authorization
+    if auth and _credentials_ok(auth.username, auth.password):
+        return None
+    return Response(
+        "Authentication required.",
+        401,
+        {"WWW-Authenticate": 'Basic realm="TEP-Net"'},
+    )
 
 # Detectors are expensive to construct (model load), so cache them by
 # (model_path, device). Crop coordinates and temporal state are reset per
@@ -378,7 +416,32 @@ def main():
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind (default 0.0.0.0)")
     parser.add_argument("--port", type=int, default=5000, help="Port (default 5000)")
     parser.add_argument("--debug", action="store_true", help="Enable Flask debug mode")
+    parser.add_argument(
+        "--auth-user",
+        default=None,
+        help="HTTP Basic Auth username (overrides WEB_AUTH_USER; default 'admin')",
+    )
+    parser.add_argument(
+        "--auth-pass",
+        default=None,
+        help="HTTP Basic Auth password (overrides WEB_AUTH_PASS). "
+        "Auth is enabled only when a non-empty password is set.",
+    )
     args = parser.parse_args()
+
+    global AUTH_USER, AUTH_PASS
+    if args.auth_user is not None:
+        AUTH_USER = args.auth_user
+    if args.auth_pass is not None:
+        AUTH_PASS = args.auth_pass
+
+    if auth_enabled():
+        print(f"HTTP Basic Auth ENABLED (user: {AUTH_USER!r})")
+    else:
+        print(
+            "HTTP Basic Auth DISABLED — no password set. "
+            "Set WEB_AUTH_PASS (or --auth-pass) before exposing this server publicly."
+        )
 
     # threaded=True so the long-lived SSE video stream doesn't block other requests.
     app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
