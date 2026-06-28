@@ -37,8 +37,19 @@ SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 SUPPORTED_VIDEO_EXTENSIONS = (".mp4", ".avi")
 
 app = Flask(__name__)
-# Videos can be large; allow up to 512 MB uploads.
-app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
+# Videos can be large; allow up to 4 GB uploads. (Oversized uploads otherwise
+# get the file part silently dropped, surfacing as a confusing "No video
+# provided" 400.) Override via WEB_MAX_UPLOAD_MB.
+_max_upload_mb = int(os.environ.get("WEB_MAX_UPLOAD_MB", "4096"))
+app.config["MAX_CONTENT_LENGTH"] = _max_upload_mb * 1024 * 1024
+
+
+@app.errorhandler(413)
+def _too_large(_e):
+    return jsonify(
+        {"error": f"Upload exceeds the {_max_upload_mb} MB limit. Increase it with "
+                  "WEB_MAX_UPLOAD_MB, or trim/downscale the video."}
+    ), 413
 
 # --------------------------------------------------------------------------- #
 # Optional HTTP Basic Auth

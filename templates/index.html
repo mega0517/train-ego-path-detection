@@ -304,13 +304,30 @@
       $("statusLine").textContent = "Processing video…";
       videoController = new AbortController();
       fetch("/api/infer_video", { method: "POST", body: buildForm(), signal: videoController.signal })
-        .then((res) => {
+        .then(async (res) => {
+          // The server returns a JSON error (e.g. 400/413/500) when the upload
+          // is rejected before streaming starts. Surface it instead of silently
+          // hanging on "Processing video…".
+          if (!res.ok) {
+            let detail = `HTTP ${res.status}`;
+            try { detail = (await res.json()).error || detail; } catch (_) {}
+            $("statusLine").textContent = "Error: " + detail;
+            setBusy(false);
+            return;
+          }
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
           let buffer = "";
+          let sawTerminal = false;
           function pump() {
             return reader.read().then(({ done, value }) => {
-              if (done) { setBusy(false); return; }
+              if (done) {
+                if (!sawTerminal) {
+                  $("statusLine").textContent = "Stopped — stream ended unexpectedly";
+                }
+                setBusy(false);
+                return;
+              }
               buffer += decoder.decode(value, { stream: true });
               let idx;
               while ((idx = buffer.indexOf("\n\n")) >= 0) {
@@ -324,11 +341,15 @@
                   setFrame($("rnnFrame"), msg.rnn, "Result preview");
                   const pct = msg.total ? Math.round(((msg.frame + 1) / msg.total) * 100) : 0;
                   $("progressBar").style.width = pct + "%";
-                  $("statusLine").textContent = `Processing frame ${msg.frame + 1}/${msg.total}`;
+                  $("statusLine").textContent = msg.total
+                    ? `Processing frame ${msg.frame + 1}/${msg.total}`
+                    : `Processing frame ${msg.frame + 1}…`;
                 } else if (msg.type === "done") {
+                  sawTerminal = true;
                   $("statusLine").textContent = `Done — ${msg.frames} frames processed`;
                   setBusy(false);
                 } else if (msg.type === "error") {
+                  sawTerminal = true;
                   $("statusLine").textContent = "Error: " + msg.error;
                   setBusy(false);
                 }
