@@ -1,6 +1,7 @@
 # requirements for basic usage
 numpy
 Pillow
+pillow-heif  # HEIC/HEIF (iPhone) image support
 PyYAML
 torch
 torchvision

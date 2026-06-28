@@ -25,6 +25,14 @@ import yaml
 from flask import Flask, jsonify, render_template, request, Response, stream_with_context
 from PIL import Image
 
+# Register HEIC/HEIF support (iPhone photos) with PIL when available.
+try:
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
+
 from src.utils.autocrop import Autocropper
 from src.utils.interface import Detector
 from src.utils.visualization import draw_egopath
@@ -314,15 +322,28 @@ def detectors_for_request(model_name, device, crop_mode, crop_coords):
     return det_single, det_rnn
 
 
-def pil_to_data_uri(img, fmt="JPEG"):
+def pil_to_data_uri(img, fmt="JPEG", quality=90):
     """Encode a PIL image as a base64 data URI for inline display."""
     if img is None:
         return None
     buf = io.BytesIO()
-    img.convert("RGB").save(buf, format=fmt, quality=90)
+    img.convert("RGB").save(buf, format=fmt, quality=quality)
     encoded = base64.b64encode(buf.getvalue()).decode("ascii")
     mime = "jpeg" if fmt.upper() == "JPEG" else fmt.lower()
     return f"data:image/{mime};base64,{encoded}"
+
+
+def downscale_to_width(img, max_w):
+    """Return (image, scale) downscaled so width <= max_w (preserving aspect).
+
+    Cheap when no resize is needed. Cutting the working resolution speeds up
+    preprocessing, drawing, JPEG encoding and network transfer all at once —
+    the dominant per-frame costs for high-resolution (e.g. 4K) video.
+    """
+    if not max_w or img.width <= max_w:
+        return img, 1.0
+    scale = max_w / img.width
+    return img.resize((max_w, max(1, round(img.height * scale)))), scale
 
 
 def decode_video_frames(path):
@@ -426,13 +447,35 @@ def api_infer_image():
     crop_mode, crop_coords = _parse_crop(request.form)
 
     try:
-        if "file" in request.files and request.files["file"].filename:
-            img = Image.open(request.files["file"].stream)
+        upload = request.files.get("file")
+        if upload is not None and upload.filename:
+            try:
+                img = Image.open(upload.stream)
+                img.load()
+            except Exception as e:  # noqa: BLE001 - PIL can't identify/decode the file
+                ext = os.path.splitext(upload.filename)[1].lower()
+                if ext in SUPPORTED_VIDEO_EXTENSIONS or ext in (".mov", ".mkv", ".webm", ".m4v"):
+                    return jsonify(
+                        {"error": f"'{upload.filename}' looks like a video, not an image. "
+                                  "Use a video file (it will be processed frame by frame)."}
+                    ), 400
+                # A truncated/partial upload of a real image fails here too — give
+                # the right hint instead of blaming the format.
+                if "truncated" in str(e).lower() or ext in SUPPORTED_IMAGE_EXTENSIONS:
+                    return jsonify(
+                        {"error": f"'{upload.filename}' did not arrive intact (upload may have "
+                                  "been cut off — common on unstable connections). Try uploading "
+                                  "it again, ideally on a stable network."}
+                    ), 400
+                return jsonify(
+                    {"error": f"Could not read '{upload.filename}' as an image. Supported: "
+                              "JPG, PNG, BMP, TIFF, HEIC. Convert other formats first."}
+                ), 400
         elif os.path.exists(DEFAULT_IMAGE):
             img = Image.open(DEFAULT_IMAGE)
+            img.load()
         else:
             return jsonify({"error": "No image provided"}), 400
-        img.load()
 
         det_single, det_rnn = detectors_for_request(
             model_name, device, crop_mode, crop_coords
@@ -470,6 +513,12 @@ def api_infer_video():
     device = request.form.get("device", "cpu")
     crop_mode, crop_coords = _parse_crop(request.form)
     stride = max(1, int(request.form.get("stride", 1)))
+    # Cap the working resolution for speed (0 = keep original). The client may
+    # override; default from WEB_MAX_PROC_WIDTH.
+    try:
+        proc_width = int(request.form.get("proc_width", os.environ.get("WEB_MAX_PROC_WIDTH", "1280")))
+    except ValueError:
+        proc_width = 1280
 
     upload = request.files.get("file")
     video_key = (request.form.get("video_key") or "").strip()
@@ -544,18 +593,29 @@ def api_infer_video():
             )
             yield sse({"type": "status", "message": "Model ready · decoding video…"})
             emitted = 0
+            crop_scaled = False
             for frame_idx, img, total in decode_video_frames(video_path):
                 if frame_idx % stride == 0:
-                    single_vis, rnn_vis = run_both(img, det_single, det_rnn)
+                    # Downscale the working frame for speed (preprocessing,
+                    # drawing, JPEG encoding and transfer all scale with pixels).
+                    proc, scale = downscale_to_width(img, proc_width)
+                    # Manual crop coords are in original pixels — scale them once
+                    # to match the downscaled frame.
+                    if scale != 1.0 and crop_mode == "manual" and not crop_scaled:
+                        for det in (det_single, det_rnn):
+                            if det is not None and isinstance(det.crop_coords, tuple):
+                                det.crop_coords = tuple(round(c * scale) for c in det.crop_coords)
+                        crop_scaled = True
+                    single_vis, rnn_vis = run_both(proc, det_single, det_rnn)
                     payload = {
                         "type": "frame",
                         "frame": frame_idx,
                         "total": total or 0,
                         "emitted": emitted + 1,
                         "elapsed": round(time.time() - t0, 1),
-                        "original": pil_to_data_uri(img),
-                        "single": pil_to_data_uri(single_vis),
-                        "rnn": pil_to_data_uri(rnn_vis),
+                        "original": pil_to_data_uri(proc, quality=80),
+                        "single": pil_to_data_uri(single_vis, quality=80),
+                        "rnn": pil_to_data_uri(rnn_vis, quality=80),
                     }
                     yield sse(payload)
                     emitted += 1

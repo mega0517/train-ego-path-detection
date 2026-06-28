@@ -44,15 +44,22 @@
       display: flex; gap: 12px; padding: 12px; align-items: stretch;
       flex: 1; min-height: 0; overflow: hidden;
     }
-    .sidebar { width: 320px; flex-shrink: 0; overflow-y: auto; }
-    .main { flex: 1; min-width: 0; display: flex; min-height: 0; }
+    /* Two-column control grid so all sections fit without scrolling. */
+    .sidebar {
+      width: 420px; flex-shrink: 0; overflow-y: auto;
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 10px; align-content: start;
+    }
+    .sidebar > .span2 { grid-column: 1 / -1; }
+    .main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; gap: 10px; }
     .card {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 10px;
-      margin-bottom: 10px;
+      margin-bottom: 0;
     }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: end; }
     .card h2 {
       margin: 0 0 7px;
       font-size: 12px;
@@ -69,7 +76,7 @@
       font-size: 13px;
       background: #fff;
     }
-    .model-list { max-height: 150px; overflow-y: auto; }
+    .model-list { max-height: none; }
     .model-item {
       display: flex; align-items: center; gap: 8px;
       padding: 5px 8px; border: 1px solid var(--border);
@@ -127,6 +134,25 @@
     }
     .radio-row { display: flex; gap: 14px; }
     .radio-row label { display: flex; align-items: center; gap: 5px; margin: 0; }
+    /* Batch (folder) thumbnail strip below the previews. */
+    .results-strip {
+      display: none; flex-shrink: 0; height: 92px; gap: 6px;
+      overflow-x: auto; overflow-y: hidden; padding: 4px;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    }
+    .results-strip.show { display: flex; }
+    .thumb {
+      flex: 0 0 auto; height: 100%; border: 2px solid transparent;
+      border-radius: 4px; cursor: pointer; position: relative; overflow: hidden;
+    }
+    .thumb.selected { border-color: var(--accent); }
+    .thumb img { height: 100%; display: block; }
+    .thumb .cap {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      font-size: 9px; color: #fff; background: rgba(0,0,0,.55);
+      padding: 1px 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .thumb.err { border-color: var(--danger); }
     @media (max-width: 1100px) {
       /* Narrow screens: stack sidebar above the previews and let the page
          scroll normally instead of forcing everything into one viewport. */
@@ -145,14 +171,16 @@
 
   <div class="layout">
     <aside class="sidebar">
-      <div class="card">
+      <div class="card span2">
         <h2>Input</h2>
         <label>Image or video file</label>
-        <input type="file" id="fileInput" accept="image/*,video/mp4,video/avi,.avi" />
+        <input type="file" id="fileInput" accept="image/*,video/*,.mov,.mkv,.webm,.m4v,.heic" />
+        <label style="margin-top:8px;">Or a folder of images (batch)</label>
+        <input type="file" id="folderInput" webkitdirectory directory multiple />
         <div class="info" id="fileInfo">No file selected — the bundled sample image will be used.</div>
       </div>
 
-      <div class="card">
+      <div class="card span2">
         <h2>Model</h2>
         <div class="model-list" id="modelList">Loading…</div>
       </div>
@@ -177,16 +205,29 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card span2">
         <h2>Video options</h2>
-        <label>Frame stride (process every N-th frame)</label>
-        <input type="number" id="stride" value="1" min="1" />
+        <div class="grid2">
+          <div>
+            <label>Frame stride (every N-th)</label>
+            <input type="number" id="stride" value="1" min="1" />
+          </div>
+          <div>
+            <label>Processing resolution</label>
+            <select id="procWidth">
+              <option value="854">480p — fastest</option>
+              <option value="1280" selected>720p — balanced</option>
+              <option value="1920">1080p</option>
+              <option value="0">Original — slowest</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       <button class="btn run" id="runBtn">Run Inference</button>
-      <button class="btn stop" id="stopBtn" disabled style="margin-top:8px;">Stop</button>
-      <div class="progress-wrap" id="progressWrap"><div class="progress-bar" id="progressBar"></div></div>
-      <div class="status-line" id="statusLine">Ready</div>
+      <button class="btn stop" id="stopBtn" disabled>Stop</button>
+      <div class="progress-wrap span2" id="progressWrap"><div class="progress-bar" id="progressBar"></div></div>
+      <div class="status-line span2" id="statusLine">Ready</div>
     </aside>
 
     <main class="main">
@@ -204,6 +245,7 @@
           <div class="frame" id="rnnFrame">Result preview</div>
         </div>
       </div>
+      <div class="results-strip" id="resultsStrip"></div>
     </main>
   </div>
 
@@ -212,6 +254,10 @@
     let selectedModel = null;
     let videoController = null;
     let uploadTick = null;
+    let batchFiles = [];      // image files picked from a folder
+    let batchResults = [];    // {name, data} stored so thumbnails are clickable
+    let batchAbort = false;
+    const IMG_RE = /\.(jpe?g|png|bmp|tiff?|heic|heif|webp)$/i;
 
     // Identity of a selected file. The server caches uploads under this key, so
     // re-running the same file (even after a server restart or browser reload)
@@ -277,23 +323,41 @@
 
     $("fileInput").onchange = () => {
       const f = $("fileInput").files[0];
+      if (f) { batchFiles = []; $("folderInput").value = ""; }  // single file overrides folder
       $("fileInfo").textContent = f ? f.name : "No file selected — the bundled sample image will be used.";
       // On selecting a new file, clear all panels and show the chosen input
       // image in the Original panel right away (before inference runs).
       resetFrames();
       $("statusLine").textContent = "Ready";
-      if (f && /\.(mp4|avi)$/i.test(f.name)) {
+      if (f && /\.(mp4|avi|mov|mkv|webm|m4v)$/i.test(f.name)) {
         $("origFrame").textContent = "Video selected — press Run Inference";
       } else if (f) {
         setFrame($("origFrame"), URL.createObjectURL(f), "Input preview");
       }
     };
 
+    $("folderInput").onchange = () => {
+      batchFiles = Array.from($("folderInput").files)
+        .filter((f) => IMG_RE.test(f.name))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (batchFiles.length) { $("fileInput").value = ""; }  // folder overrides single
+      resetFrames();
+      $("resultsStrip").innerHTML = "";
+      $("resultsStrip").classList.remove("show");
+      batchResults = [];
+      $("fileInfo").textContent = batchFiles.length
+        ? `${batchFiles.length} images selected (batch)`
+        : "No image files found in that folder.";
+      $("statusLine").textContent = batchFiles.length
+        ? `Ready — ${batchFiles.length} images. Press Run Inference.`
+        : "Ready";
+    };
+
     $("cropMode").onchange = () => {
       $("cropCoords").classList.toggle("show", $("cropMode").value === "manual");
     };
 
-    function buildForm() {
+    function buildForm(fileOverride) {
       const fd = new FormData();
       fd.append("model", selectedModel);
       fd.append("device", $("deviceSelect").value);
@@ -304,9 +368,16 @@
         fd.append("crop_right", $("cropRight").value);
         fd.append("crop_bottom", $("cropBottom").value);
       }
-      const f = $("fileInput").files[0];
+      const f = fileOverride !== undefined ? fileOverride : $("fileInput").files[0];
       if (f) fd.append("file", f);
       return fd;
+    }
+
+    function showImageResult(data) {
+      setFrame($("origFrame"), data.original, "Input preview");
+      setFrame($("singleFrame"), data.single,
+        data.single_is_fallback ? "Single-frame (RNN base net)" : "Result preview");
+      setFrame($("rnnFrame"), data.rnn, data.has_rnn ? "Result preview" : "No RNN model");
     }
 
     function setBusy(busy) {
@@ -323,16 +394,69 @@
         const res = await fetch("/api/infer_image", { method: "POST", body: buildForm() });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Inference failed");
-        setFrame($("origFrame"), data.original, "Input preview");
-        setFrame($("singleFrame"), data.single,
-          data.single_is_fallback ? "Single-frame (RNN base net)" : "Result preview");
-        setFrame($("rnnFrame"), data.rnn, data.has_rnn ? "Result preview" : "No RNN model");
+        showImageResult(data);
         $("statusLine").textContent = "Inference complete!";
       } catch (e) {
         $("statusLine").textContent = "Error: " + e.message;
       } finally {
         setBusy(false);
       }
+    }
+
+    function addThumb(name, data, ok) {
+      const idx = batchResults.length;
+      batchResults.push({ name, data, ok });
+      const t = document.createElement("div");
+      t.className = "thumb" + (ok ? "" : " err");
+      t.title = name + (ok ? "" : " — " + (data.error || "failed"));
+      if (ok && data.single) {
+        const im = new Image(); im.src = data.single; t.appendChild(im);
+      } else {
+        t.style.width = "70px"; t.style.background = "#fbe9e7";
+      }
+      const cap = document.createElement("div");
+      cap.className = "cap"; cap.textContent = name;
+      t.appendChild(cap);
+      t.onclick = () => {
+        document.querySelectorAll(".thumb").forEach((e) => e.classList.remove("selected"));
+        t.classList.add("selected");
+        const r = batchResults[idx];
+        if (r.ok) { showImageResult(r.data); $("statusLine").textContent = `Showing ${r.name}`; }
+        else { $("statusLine").textContent = `${r.name}: ${r.data.error || "failed"}`; }
+      };
+      $("resultsStrip").appendChild(t);
+    }
+
+    // Process a folder of images sequentially, updating the panels live and
+    // building a clickable thumbnail strip.
+    async function runBatch() {
+      setBusy(true);
+      batchAbort = false;
+      batchResults = [];
+      $("resultsStrip").innerHTML = "";
+      $("resultsStrip").classList.add("show");
+      const total = batchFiles.length;
+      let okCount = 0;
+      for (let i = 0; i < total; i++) {
+        if (batchAbort) { $("statusLine").textContent = `Stopped at ${i}/${total}`; break; }
+        const f = batchFiles[i];
+        $("statusLine").textContent = `Processing ${i + 1}/${total}: ${f.name}`;
+        $("progressBar").style.width = Math.round(((i + 1) / total) * 100) + "%";
+        try {
+          const res = await fetch("/api/infer_image", { method: "POST", body: buildForm(f) });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "failed");
+          showImageResult(data);
+          addThumb(f.name, data, true);
+          okCount++;
+        } catch (e) {
+          addThumb(f.name, { error: e.message }, false);
+        }
+      }
+      if (!batchAbort) {
+        $("statusLine").textContent = `Done — ${okCount}/${total} images processed`;
+      }
+      setBusy(false);
     }
 
     function stopUploadTick() {
@@ -361,6 +485,7 @@
 
       const fd = buildForm();
       fd.append("video_key", key || "");
+      fd.append("proc_width", $("procWidth").value);
       if (reuse) fd.delete("file");
 
       $("statusLine").textContent = reuse
@@ -470,12 +595,14 @@
 
     $("runBtn").onclick = () => {
       if (!selectedModel) { $("statusLine").textContent = "Please select a model"; return; }
+      if (batchFiles.length) { runBatch(); return; }
       const f = $("fileInput").files[0];
-      const isVideo = f && /\.(mp4|avi)$/i.test(f.name);
+      const isVideo = f && /\.(mp4|avi|mov|mkv|webm|m4v)$/i.test(f.name);
       if (isVideo) runVideo(); else runImage();
     };
 
     $("stopBtn").onclick = () => {
+      batchAbort = true;
       if (videoController) videoController.abort();
       stopUploadTick();
       setBusy(false);
