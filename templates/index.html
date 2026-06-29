@@ -214,6 +214,7 @@
   <header>
     <span>🚆 TEP-Net</span>
     <span class="tabs">
+      <button class="tab" id="tabUpload">업로드 Upload</button>
       <button class="tab active" id="tabLabel">라벨링 Labeling</button>
       <button class="tab" id="tabTrain">학습 RNN Transfer</button>
       <button class="tab" id="tabInfer">추론 Inference</button>
@@ -221,94 +222,112 @@
     <span class="status" id="deviceStatus">…</span>
   </header>
 
+  <div class="layout" id="pageUpload" style="display:none;">
+    <aside class="sidebar">
+      <div class="card span2">
+        <h2>새 폴더 (현재 폴더 안)</h2>
+        <div class="grid2">
+          <input type="text" id="fxNewName" placeholder="폴더 이름" />
+          <button class="btn" id="fxMkdirBtn" style="margin-top:0;background:#455a64;">만들기</button>
+        </div>
+      </div>
+      <div class="card span2">
+        <h2>파일/폴더 업로드</h2>
+        <input type="file" id="fxFiles" webkitdirectory directory multiple />
+        <button class="btn" id="fxUploadBtn" style="margin-top:8px;background:#1565c0;">현재 폴더에 업로드</button>
+      </div>
+      <div class="card span2">
+        <h2>ZIP 업로드 &amp; 해제</h2>
+        <input type="file" id="fxZip" accept=".zip,application/zip" />
+        <button class="btn" id="fxZipBtn" style="margin-top:8px;background:#5e35b1;">업로드 &amp; 해제</button>
+      </div>
+      <div class="progress-wrap span2" id="fxProgWrap" style="display:none;"><div class="progress-bar" id="fxProgBar"></div></div>
+      <button class="btn stop span2" id="fxCancelBtn" style="display:none;">전송 취소</button>
+      <div class="status-line span2" id="fxStatus">서버 파일 탐색기</div>
+    </aside>
+    <main class="main">
+      <div class="metric-row" style="align-items:center;">
+        <button class="btn" id="fxUpBtn" style="width:auto;background:#607d8b;">⬆ 상위</button>
+        <button class="btn" id="fxRefreshBtn" style="width:auto;background:#607d8b;">🔄</button>
+        <div class="metric" style="flex:1;"><div class="lbl">현재 폴더</div><div class="val" id="fxPath" style="font-size:13px;word-break:break-all;">—</div></div>
+      </div>
+      <div class="img-list" id="fxList" style="max-height:none; flex:1; min-height:0;">Loading…</div>
+    </main>
+  </div>
+
   <div class="layout" id="pageInfer" style="display:none;">
     <aside class="sidebar">
       <div class="card span2">
-        <h2>Input</h2>
-        <label>Image or video file</label>
+        <h2>입력</h2>
+        <label>이미지 또는 비디오 파일</label>
         <input type="file" id="fileInput" accept="image/*,video/*,.mov,.mkv,.webm,.m4v,.heic" />
-        <label style="margin-top:8px;">Or a folder of images (batch upload)</label>
+        <label style="margin-top:8px;">또는 이미지 폴더 (일괄 업로드)</label>
         <input type="file" id="folderInput" webkitdirectory directory multiple />
-        <label style="margin-top:8px;">Or a server folder (no upload — fastest)</label>
+        <label style="margin-top:8px;">또는 서버 폴더 (업로드 없이 — 가장 빠름)</label>
         <div class="grid2">
-          <input type="text" id="serverFolder" placeholder="pick or type a path" />
-          <button class="btn" id="browseBtn" style="margin-top:0;background:#455a64;">Browse server…</button>
+          <input type="text" id="serverFolder" placeholder="경로 선택 또는 입력" />
+          <button class="btn" id="browseBtn" style="margin-top:0;background:#455a64;">서버 탐색…</button>
         </div>
         <div class="browser" id="browser" style="display:none;"></div>
         <div class="grid2" style="margin-top:6px;">
           <select id="optWidth" title="Optimize: resize big images to this width">
-            <option value="1280">optimize → 1280px</option>
-            <option value="1920" selected>optimize → 1920px</option>
-            <option value="2560">optimize → 2560px</option>
+            <option value="1280">최적화 → 1280px</option>
+            <option value="1920" selected>최적화 → 1920px</option>
+            <option value="2560">최적화 → 2560px</option>
           </select>
-          <button class="btn" id="optimizeBtn" style="margin-top:0;background:#6a1b9a;">Optimize → JPEG</button>
+          <button class="btn" id="optimizeBtn" style="margin-top:0;background:#6a1b9a;">최적화 → JPEG</button>
         </div>
-        <div class="info" id="fileInfo">No file selected — the bundled sample image will be used.</div>
+        <div class="info" id="fileInfo">파일 미선택 — 기본 샘플 이미지를 사용합니다.</div>
       </div>
 
       <div class="card span2">
-        <h2>Upload to server (no SSH)</h2>
-        <div class="grid2">
-          <div>
-            <label>Destination subfolder</label>
-            <input type="text" id="uplSubdir" placeholder="myimages" />
-          </div>
-          <div>
-            <label>Folder to upload</label>
-            <input type="file" id="uplFiles" webkitdirectory directory multiple />
-          </div>
-        </div>
-        <button class="btn" id="uploadBtn" style="margin-top:8px;background:#1565c0;">Upload to server</button>
-      </div>
-
-      <div class="card span2">
-        <h2>Model</h2>
+        <h2>모델</h2>
         <div class="model-list" id="modelList">Loading…</div>
       </div>
 
       <div class="card">
-        <h2>Device</h2>
+        <h2>디바이스</h2>
         <select id="deviceSelect"></select>
       </div>
 
       <div class="card">
-        <h2>Crop</h2>
+        <h2>크롭</h2>
         <select id="cropMode">
           <option value="none">None</option>
           <option value="auto">Auto</option>
           <option value="manual">Manual</option>
         </select>
         <div class="crop-coords" id="cropCoords">
-          <div><label>Left (x)</label><input type="number" id="cropLeft" value="0" min="0" /></div>
-          <div><label>Top (y)</label><input type="number" id="cropTop" value="0" min="0" /></div>
-          <div><label>Right (x)</label><input type="number" id="cropRight" value="1369" min="0" /></div>
-          <div><label>Bottom (y)</label><input type="number" id="cropBottom" value="1079" min="0" /></div>
+          <div><label>왼쪽 (x)</label><input type="number" id="cropLeft" value="0" min="0" /></div>
+          <div><label>위 (y)</label><input type="number" id="cropTop" value="0" min="0" /></div>
+          <div><label>오른쪽 (x)</label><input type="number" id="cropRight" value="1369" min="0" /></div>
+          <div><label>아래 (y)</label><input type="number" id="cropBottom" value="1079" min="0" /></div>
         </div>
       </div>
 
       <div class="card span2">
-        <h2>Video options</h2>
+        <h2>비디오 옵션</h2>
         <div class="grid2">
           <div>
-            <label>Frame stride (every N-th)</label>
+            <label>프레임 간격 (N개마다)</label>
             <input type="number" id="stride" value="1" min="1" />
           </div>
           <div>
-            <label>Processing resolution</label>
+            <label>처리 해상도</label>
             <select id="procWidth">
-              <option value="854">480p — fastest</option>
-              <option value="1280" selected>720p — balanced</option>
+              <option value="854">480p — 가장 빠름</option>
+              <option value="1280" selected>720p — 보통</option>
               <option value="1920">1080p</option>
-              <option value="0">Original — slowest</option>
+              <option value="0">원본 — 가장 느림</option>
             </select>
           </div>
         </div>
       </div>
 
-      <button class="btn run" id="runBtn">Run Inference</button>
-      <button class="btn stop" id="stopBtn" disabled>Stop</button>
+      <button class="btn run" id="runBtn">추론 실행</button>
+      <button class="btn stop" id="stopBtn" disabled>정지</button>
       <div class="progress-wrap span2" id="progressWrap"><div class="progress-bar" id="progressBar"></div></div>
-      <div class="status-line span2" id="statusLine">Ready</div>
+      <div class="status-line span2" id="statusLine">준비됨</div>
     </aside>
 
     <main class="main">
@@ -938,50 +957,116 @@
       $("statusLine").textContent = "Stopped";
     };
 
-    // Upload a folder of files to a server subfolder (works over the Funnel URL,
-    // no SSH). On success, auto-fill the server folder path for inference.
-    $("uploadBtn").onclick = () => {
-      const sub = $("uplSubdir").value.trim();
-      const files = Array.from($("uplFiles").files);
-      if (!sub) { $("statusLine").textContent = "Enter a destination subfolder"; return; }
-      if (!files.length) { $("statusLine").textContent = "Select a folder to upload"; return; }
-      $("uploadBtn").disabled = true;
-      setBusy(true);
-      $("statusLine").textContent = `Uploading ${files.length} files…`;
+    // ----- Server file explorer (Upload tab) -----
+    let fxPath = null;
+    function fmtSize(b) {
+      return b >= 1048576 ? (b / 1048576).toFixed(1) + " MB"
+           : b >= 1024 ? (b / 1024).toFixed(0) + " KB" : b + " B";
+    }
+    function fxDelBtn(path, name, isDir) {
+      const del = document.createElement("span");
+      del.textContent = "🗑"; del.title = "Delete"; del.style.cssText = "cursor:pointer;padding:0 6px;";
+      del.onclick = async (ev) => {
+        ev.stopPropagation();
+        if (!confirm(`Delete ${isDir ? "folder" : "file"} "${name}"${isDir ? " and ALL its contents" : ""}?`)) return;
+        const fd = new FormData(); fd.append("path", path);
+        const r = await (await fetch("/api/fs/delete", { method: "POST", body: fd })).json();
+        if (r.error) { $("fxStatus").textContent = "Delete error: " + r.error; return; }
+        $("fxStatus").textContent = `Deleted ${name}`;
+        explorerLoad(fxPath);
+      };
+      return del;
+    }
+    async function explorerLoad(path) {
+      try {
+        const url = "/api/browse" + (path ? `?path=${encodeURIComponent(path)}` : "");
+        const d = await (await fetch(url)).json();
+        if (!d.ok) throw new Error(d.error || "browse failed");
+        fxPath = d.path;
+        $("fxPath").textContent = d.path;
+        $("fxUpBtn").disabled = !d.parent;
+        $("fxUpBtn").dataset.parent = d.parent || "";
+        const el = $("fxList"); el.innerHTML = "";
+        if (!d.dirs.length && !d.files.length) el.textContent = "(empty folder)";
+        d.dirs.forEach((dir) => {
+          const row = document.createElement("div"); row.className = "img-item";
+          const nm = document.createElement("span");
+          nm.style.cssText = "cursor:pointer;flex:1;"; nm.textContent = `📁 ${dir.name}`;
+          nm.onclick = () => explorerLoad(dir.path);
+          const cnt = document.createElement("span");
+          cnt.className = "mk"; cnt.style.color = "var(--muted)";
+          cnt.textContent = dir.images ? `${dir.images} imgs` : "";
+          row.append(nm, cnt, fxDelBtn(dir.path, dir.name, true)); el.appendChild(row);
+        });
+        d.files.forEach((f) => {
+          const row = document.createElement("div"); row.className = "img-item";
+          const nm = document.createElement("span"); nm.style.flex = "1"; nm.textContent = `📄 ${f.name}`;
+          const sz = document.createElement("span");
+          sz.className = "mk"; sz.style.color = "var(--muted)"; sz.textContent = fmtSize(f.size);
+          row.append(nm, sz, fxDelBtn(f.path, f.name, false)); el.appendChild(row);
+        });
+        if ($("serverFolder")) $("serverFolder").value = d.path;  // handoff to other tabs
+      } catch (e) { $("fxStatus").textContent = "Error: " + e.message; }
+    }
+    $("fxUpBtn").onclick = () => { const p = $("fxUpBtn").dataset.parent; if (p) explorerLoad(p); };
+    $("fxRefreshBtn").onclick = () => explorerLoad(fxPath);
+    $("fxMkdirBtn").onclick = async () => {
+      const name = $("fxNewName").value.trim();
+      if (!name) { $("fxStatus").textContent = "Enter a folder name"; return; }
+      const fd = new FormData(); fd.append("parent", fxPath || ""); fd.append("name", name);
+      const r = await (await fetch("/api/fs/mkdir", { method: "POST", body: fd })).json();
+      if (r.error) { $("fxStatus").textContent = "Create error: " + r.error; return; }
+      $("fxNewName").value = ""; $("fxStatus").textContent = `Created ${name}`;
+      explorerLoad(fxPath);
+    };
+    let fxXhr = null;
+    function fxEndUpload(btnId) {
+      $(btnId).disabled = false;
+      $("fxProgWrap").style.display = "none"; $("fxProgBar").style.width = "0%";
+      $("fxCancelBtn").style.display = "none";
+      fxXhr = null;
+    }
+    function fxUpload(inputId, btnId, endpoint, isZip) {
+      const fl = $(inputId).files;
+      if (!fl.length) { $("fxStatus").textContent = "Select " + (isZip ? "a .zip" : "files/folder"); return; }
+      $(btnId).disabled = true; $("fxProgWrap").style.display = "block";
+      $("fxCancelBtn").style.display = "block";
+      $("fxStatus").textContent = "Uploading…";
       const fd = new FormData();
-      fd.append("subdir", sub);
-      files.forEach((f) => fd.append("files", f, f.name));
+      fd.append("path", fxPath || "");
+      if (isZip) fd.append("file", fl[0], fl[0].name);
+      else Array.from(fl).forEach((x) => fd.append("files", x, x.name));
       const xhr = new XMLHttpRequest();
-      videoController = xhr;
+      fxXhr = xhr;
+      const t0 = performance.now();
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
           const pct = Math.round((e.loaded / e.total) * 100);
-          $("progressBar").style.width = pct + "%";
-          $("statusLine").textContent =
-            `Uploading ${pct}% (${(e.loaded / 1048576).toFixed(1)}/${(e.total / 1048576).toFixed(1)} MB)`;
+          const secs = (performance.now() - t0) / 1000;
+          const mbps = secs > 0 ? (e.loaded / 1048576 / secs) : 0;  // live speed
+          $("fxProgBar").style.width = pct + "%";
+          $("fxStatus").textContent =
+            `Uploading ${pct}% (${(e.loaded/1048576).toFixed(1)}/${(e.total/1048576).toFixed(1)} MB) · ${mbps.toFixed(1)} MB/s`;
         }
       };
       xhr.onload = () => {
-        $("uploadBtn").disabled = false;
-        setBusy(false);
-        if (xhr.status >= 400) {
-          let detail = `HTTP ${xhr.status}`;
-          try { detail = JSON.parse(xhr.responseText).error || detail; } catch (_) {}
-          $("statusLine").textContent = "Upload error: " + detail;
-          return;
-        }
+        fxEndUpload(btnId);
         let d = {}; try { d = JSON.parse(xhr.responseText); } catch (_) {}
-        $("statusLine").textContent =
-          `Uploaded ${d.saved} files to ${d.path}` + (d.skipped ? ` (${d.skipped} skipped)` : "");
-        if (d.path) { $("serverFolder").value = d.path; $("serverFolder").onchange(); }
+        if (xhr.status >= 400) { $("fxStatus").textContent = "Error: " + (d.error || xhr.status); return; }
+        const secs = ((performance.now() - t0) / 1000).toFixed(1);
+        $("fxStatus").textContent = (isZip
+          ? `Extracted ${d.extracted} files${d.skipped ? ` (${d.skipped} skipped)` : ""}`
+          : `Uploaded ${d.saved} files${d.skipped ? ` (${d.skipped} skipped)` : ""}`) + ` in ${secs}s`;
+        $(inputId).value = "";
+        explorerLoad(fxPath);
       };
-      xhr.onerror = () => {
-        $("uploadBtn").disabled = false; setBusy(false);
-        $("statusLine").textContent = "Upload error: network error";
-      };
-      xhr.open("POST", "/api/upload_to_server");
-      xhr.send(fd);
-    };
+      xhr.onerror = () => { fxEndUpload(btnId); $("fxStatus").textContent = "Network error"; };
+      xhr.onabort = () => { fxEndUpload(btnId); $("fxStatus").textContent = "Transfer cancelled"; };
+      xhr.open("POST", endpoint); xhr.send(fd);
+    }
+    $("fxCancelBtn").onclick = () => { if (fxXhr) fxXhr.abort(); };
+    $("fxUploadBtn").onclick = () => fxUpload("fxFiles", "fxUploadBtn", "/api/upload_to_server", false);
+    $("fxZipBtn").onclick = () => fxUpload("fxZip", "fxZipBtn", "/api/upload_zip", true);
 
     // Convert a server folder of big images to resized JPEGs (one-time), then
     // point inference at the faster '_opt' folder.
@@ -1043,12 +1128,15 @@
     // ----- Tabs -----
     let trainOptionsLoaded = false;
     function showPage(which) {
-      const pages = { infer: "pageInfer", label: "pageLabel", train: "pageTrain" };
-      const tabs = { infer: "tabInfer", label: "tabLabel", train: "tabTrain" };
+      const pages = { upload: "pageUpload", infer: "pageInfer", label: "pageLabel", train: "pageTrain" };
+      const tabs = { upload: "tabUpload", infer: "tabInfer", label: "tabLabel", train: "tabTrain" };
       Object.entries(pages).forEach(([k, id]) => { $(id).style.display = k === which ? "flex" : "none"; });
       Object.entries(tabs).forEach(([k, id]) => { $(id).classList.toggle("active", k === which); });
       if (which === "train" && !trainOptionsLoaded) { loadTrainOptions(); trainOptionsLoaded = true; }
+      if (which === "upload" && !uploadDirsLoaded) { explorerLoad(); uploadDirsLoaded = true; }
     }
+    let uploadDirsLoaded = false;
+    $("tabUpload").onclick = () => showPage("upload");
     $("tabInfer").onclick = () => showPage("infer");
     $("tabLabel").onclick = () => showPage("label");
     $("tabTrain").onclick = () => showPage("train");

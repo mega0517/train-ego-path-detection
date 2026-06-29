@@ -680,13 +680,16 @@ def api_browse():
     if not os.path.isdir(cur):
         return jsonify({"ok": False, "error": f"Not a folder: {cur}"}), 400
 
-    dirs = []
+    dirs, files = [], []
     try:
         for name in sorted(os.listdir(cur)):
             full = os.path.join(cur, name)
             if os.path.isdir(full):
                 dirs.append({"name": name, "path": full,
                              "images": len(list_folder_images(full) or [])})
+            elif os.path.isfile(full):
+                files.append({"name": name, "path": full,
+                              "size": os.path.getsize(full)})
     except OSError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
@@ -695,7 +698,7 @@ def api_browse():
         parent = None
     return jsonify({
         "ok": True, "path": cur, "parent": parent, "root": root,
-        "dirs": dirs, "images": len(list_folder_images(cur) or []),
+        "dirs": dirs, "files": files, "images": len(list_folder_images(cur) or []),
     })
 
 
@@ -734,13 +737,64 @@ def _safe_dest_dir(subdir):
     return dest
 
 
+def _under_data_root(path):
+    """Realpath of *path* strictly inside the upload root (not the root itself)."""
+    root = os.path.realpath(_UPLOAD_ROOT)
+    rp = os.path.realpath(path or "")
+    return rp if rp.startswith(root + os.sep) else None
+
+
+def _resolve_dest(subdir, path):
+    """Destination dir from an absolute *path* (root or under it) or a *subdir*."""
+    root = os.path.realpath(_UPLOAD_ROOT)
+    if path:
+        rp = os.path.realpath(path)
+        return rp if (rp == root or rp.startswith(root + os.sep)) else None
+    return _safe_dest_dir(subdir)
+
+
+@app.route("/api/fs/mkdir", methods=["POST"])
+def api_fs_mkdir():
+    """Create a new folder under the data root (parent = current folder, or root)."""
+    parent = (request.form.get("parent") or "").strip()
+    name = os.path.basename((request.form.get("name") or "").strip())
+    if not name or name in (".", ".."):
+        return jsonify({"error": "Invalid folder name."}), 400
+    root = os.path.realpath(_UPLOAD_ROOT)
+    base = os.path.realpath(parent) if parent else root
+    if base != root and not base.startswith(root + os.sep):
+        return jsonify({"error": "Parent folder outside data root."}), 400
+    target = os.path.realpath(os.path.join(base, name))
+    if not target.startswith(root + os.sep):
+        return jsonify({"error": "Invalid path."}), 400
+    os.makedirs(target, exist_ok=True)
+    return jsonify({"ok": True, "path": target})
+
+
+@app.route("/api/fs/delete", methods=["POST"])
+def api_fs_delete():
+    """Delete a file or folder (recursively) inside the data root."""
+    import shutil
+
+    target = _under_data_root(request.form.get("path"))
+    if target is None:
+        return jsonify({"error": "Path must be inside the data root."}), 400
+    if not os.path.exists(target):
+        return jsonify({"error": "Path not found."}), 400
+    if os.path.isdir(target):
+        shutil.rmtree(target)
+    else:
+        os.unlink(target)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/upload_to_server", methods=["POST"])
 def api_upload_to_server():
     """Save uploaded files into a subfolder under WEB_UPLOAD_ROOT (no SSH needed),
     so they can then be processed with the no-upload server-folder mode."""
     from werkzeug.utils import secure_filename
 
-    dest = _safe_dest_dir(request.form.get("subdir"))
+    dest = _resolve_dest(request.form.get("subdir"), request.form.get("path"))
     if dest is None:
         return jsonify({"error": "Invalid destination folder name."}), 400
     files = request.files.getlist("files")
@@ -834,6 +888,95 @@ def api_optimize_folder():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.route("/api/upload_zip", methods=["POST"])
+def api_upload_zip():
+    """Upload a .zip and extract it into a subfolder under WEB_UPLOAD_ROOT.
+    Protects against zip-slip (entries escaping the destination)."""
+    import shutil
+    import tempfile
+    import zipfile
+
+    dest = _resolve_dest(request.form.get("subdir"), request.form.get("path"))
+    if dest is None:
+        return jsonify({"error": "Invalid destination folder name."}), 400
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({"error": "No zip file provided."}), 400
+    if not upload.filename.lower().endswith(".zip"):
+        return jsonify({"error": "File must be a .zip."}), 400
+
+    os.makedirs(dest, exist_ok=True)
+    dest_real = os.path.realpath(dest)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip", dir=dest)
+    upload.save(tmp.name)
+    tmp.close()
+
+    extracted, skipped = 0, 0
+    try:
+        with zipfile.ZipFile(tmp.name) as z:
+            for info in z.infolist():
+                if info.is_dir():
+                    continue
+                target = os.path.realpath(os.path.join(dest, info.filename))
+                if target != dest_real and not target.startswith(dest_real + os.sep):
+                    skipped += 1  # zip-slip: entry would escape the destination
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with z.open(info) as src, open(target, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                extracted += 1
+    except zipfile.BadZipFile:
+        os.unlink(tmp.name)
+        return jsonify({"error": "Not a valid zip file."}), 400
+    finally:
+        if os.path.exists(tmp.name):
+            os.unlink(tmp.name)  # remove the uploaded archive after extraction
+    return jsonify({"ok": True, "path": dest, "extracted": extracted, "skipped": skipped})
+
+
+@app.route("/api/upload_dirs")
+def api_upload_dirs():
+    """List existing subfolders under WEB_UPLOAD_ROOT (with file counts)."""
+    root = os.path.realpath(_UPLOAD_ROOT)
+    dirs = []
+    if os.path.isdir(root):
+        for n in sorted(os.listdir(root)):
+            fp = os.path.join(root, n)
+            if os.path.isdir(fp):
+                cnt = sum(1 for x in os.listdir(fp) if os.path.isfile(os.path.join(fp, x)))
+                dirs.append({"name": n, "files": cnt})
+    return jsonify({"ok": True, "root": root, "dirs": dirs})
+
+
+@app.route("/api/upload_list")
+def api_upload_list():
+    """List files in an uploaded subfolder under WEB_UPLOAD_ROOT (for review/delete)."""
+    dest = _safe_dest_dir(request.args.get("subdir"))
+    if dest is None or not os.path.isdir(dest):
+        return jsonify({"ok": False, "error": "Folder not found."}), 400
+    files = []
+    for n in sorted(os.listdir(dest)):
+        fp = os.path.join(dest, n)
+        if os.path.isfile(fp):
+            files.append({"name": n, "size": os.path.getsize(fp)})
+    return jsonify({"ok": True, "path": dest, "count": len(files), "files": files})
+
+
+@app.route("/api/delete_file", methods=["POST"])
+def api_delete_file():
+    """Delete a single uploaded file (restricted to WEB_UPLOAD_ROOT)."""
+    dest = _safe_dest_dir(request.form.get("subdir"))
+    name = os.path.basename((request.form.get("name") or "").strip())
+    if dest is None or not name:
+        return jsonify({"error": "Invalid path."}), 400
+    fp = os.path.join(dest, name)
+    if not os.path.isfile(fp):
+        return jsonify({"error": "File not found."}), 400
+    os.unlink(fp)
+    remaining = sum(1 for f in os.listdir(dest) if os.path.isfile(os.path.join(dest, f)))
+    return jsonify({"ok": True, "remaining": remaining})
 
 
 @app.route("/api/infer_folder", methods=["POST"])
