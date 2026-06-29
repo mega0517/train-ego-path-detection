@@ -460,15 +460,19 @@
         <button class="btn" id="lblInterpBtn" style="margin-top:6px;background:#2e7d32;">라벨된 프레임 사이 보간</button>
       </div>
       <div class="card span2">
-        <h2>자동 라벨 (광학 흐름)</h2>
-        <div class="info">현재 프레임의 레일을 추적으로 이후 프레임에 전파합니다. 빠르지만 텍스처 없는 레일에선 벗어날 수 있어, 위의 보간을 권장합니다.</div>
+        <h2>자동 라벨 (학습된 모델로 레일 검출)</h2>
+        <div class="info">학습된 모델로 모든 프레임의 레일을 직접 검출해 라벨을 생성합니다. 시드·추적이 없어 드리프트가 없으며, 도메인이 맞는 모델일수록 정확합니다. regression 모델은 좌·우 레일을 직접 예측해 라벨용으로 가장 깔끔합니다. 생성 후 어긋난 프레임만 수동 보정하세요.</div>
         <div class="grid2" style="margin-top:6px;">
           <div>
-            <label>프레임 수 (0=전체)</label>
-            <input type="number" id="lblAutoN" value="0" min="0" />
+            <label>모델</label>
+            <select id="lblDetectModel"></select>
           </div>
-          <button class="btn" id="lblAutoBtn" style="margin-top:0;background:#8e24aa;">자동 라벨 →</button>
+          <div>
+            <label>디바이스</label>
+            <select id="lblDetectDevice"></select>
+          </div>
         </div>
+        <button class="btn" id="lblDetectBtn" style="margin-top:8px;background:#8e24aa;">모델로 자동 라벨 →</button>
       </div>
       <div class="progress-wrap span2" id="lblProgWrap"><div class="progress-bar" id="lblProgBar"></div></div>
       <div class="status-line span2" id="lblStatus">폴더와 주석 JSON을 설정하면 이미지를 불러옵니다.</div>
@@ -549,6 +553,30 @@
         list.appendChild(item);
         if (i === 0) item.click();
       });
+
+      // Labeling tab: model-based auto-label dropdowns (model + device).
+      const lm = $("lblDetectModel");
+      if (lm) {
+        lm.innerHTML = "";
+        let preferred = false;
+        data.models.forEach((m) => {
+          const info = m.base_info || m.rnn_info || {};
+          const o = document.createElement("option");
+          o.value = m.name;
+          o.textContent = `${m.name} (${info.method || "?"}/${info.backbone || "?"})`;
+          // regression predicts rails directly → cleanest for labeling; prefer it.
+          if (info.method === "regression" && !preferred) { o.selected = true; preferred = true; }
+          lm.appendChild(o);
+        });
+        const ld = $("lblDetectDevice");
+        ld.innerHTML = "";
+        data.devices.forEach((d) => {
+          const o = document.createElement("option");
+          o.value = d; o.textContent = d;
+          if (d === data.default_device) o.selected = true;
+          ld.appendChild(o);
+        });
+      }
     }
 
     function resetFrames() {
@@ -1410,19 +1438,23 @@
     $("lblPrevBtn").onclick = () => loadLabelImage(lbl.idx - 1);
     $("lblNextBtn").onclick = () => loadLabelImage(lbl.idx + 1);
 
-    // Propagate the current (saved) frame's rails to following frames.
-    $("lblAutoBtn").onclick = async () => {
-      if (lbl.idx < 0) { $("lblStatus").textContent = "Open an image first."; return; }
-      if (!(await saveLabel())) return;  // current frame is the seed; must be valid
-      const startName = lbl.images[lbl.idx].name;
-      $("lblStatus").textContent = "Auto-labeling…";
+    // Auto-label every frame by detecting rails with a trained model.
+    $("lblDetectBtn").onclick = async () => {
+      const folder = $("lblFolder").value.trim();
+      const annots = $("lblAnnots").value.trim();
+      const model = $("lblDetectModel").value;
+      if (!folder || !annots) { $("lblStatus").textContent = "폴더와 주석 JSON 경로를 먼저 설정하세요."; return; }
+      if (!model) { $("lblStatus").textContent = "검출에 사용할 모델을 선택하세요."; return; }
+      if (lbl.idx >= 0 && lbl.left.length >= 2 && lbl.right.length >= 2) await saveLabel();
+      $("lblDetectBtn").disabled = true;
+      $("lblStatus").textContent = `${model}로 레일 검출 중…`;
       const fd = new FormData();
-      fd.append("folder", $("lblFolder").value.trim());
-      fd.append("annots", $("lblAnnots").value.trim());
-      fd.append("start_name", startName);
-      fd.append("max_frames", $("lblAutoN").value || "0");
+      fd.append("folder", folder);
+      fd.append("annots", annots);
+      fd.append("model", model);
+      fd.append("device", $("lblDetectDevice").value || "");
       try {
-        const res = await fetch("/api/label/autolabel", { method: "POST", body: fd });
+        const res = await fetch("/api/label/detect_model", { method: "POST", body: fd });
         if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }
         const reader = res.body.getReader(); const dec = new TextDecoder();
         let buf = "", li = 0;
@@ -1439,18 +1471,27 @@
             if (m.type === "status") { $("lblStatus").textContent = m.message; }
             else if (m.type === "progress") {
               $("lblProgBar").style.width = Math.round((m.index / m.total) * 100) + "%";
-              $("lblStatus").textContent = `Auto-labeling ${m.index}/${m.total}: ${m.name}`;
-              if (m.name in idxByName) { lbl.images[idxByName[m.name]].labeled = true; }
+              $("lblStatus").textContent = `레일 검출 ${m.index}/${m.total}: ${m.name}`;
+            } else if (m.type === "log") {
+              $("lblStatus").textContent = `${m.name}: ${m.msg}`;
             } else if (m.type === "done") {
+              // Refresh which frames now have labels (detect_model may skip frames with no rail).
+              const r = await (await fetch(`/api/label/list?folder=${encodeURIComponent(folder)}&annots=${encodeURIComponent(annots)}`)).json().catch(() => null);
+              if (r && r.ok && r.images) {
+                const labeledSet = new Set(r.images.filter((x) => x.labeled).map((x) => x.name));
+                lbl.images.forEach((im) => { im.labeled = labeledSet.has(im.name); });
+              }
               renderImgList();
               $("lblCount").textContent = `(${lbl.images.length}, labeled ${m.labeled_total})`;
-              $("lblStatus").textContent = `Auto-labeled ${m.count} frames ✓ — review & fix as needed.`;
+              $("lblStatus").textContent = `${m.count}/${m.total} 프레임 검출·라벨 완료 ✓ — 어긋난 프레임만 보정하세요.`;
               $("lblProgBar").style.width = "0%";
+              if (lbl.idx >= 0) loadLabelImage(lbl.idx);
             } else if (m.type === "error") { $("lblStatus").textContent = "Error: " + m.error; }
           }
           buf = buf.slice(li); li = 0;
         }
       } catch (e) { $("lblStatus").textContent = "Error: " + e.message; }
+      finally { $("lblDetectBtn").disabled = false; }
     };
 
     // Fill all frames by interpolating between manually-labeled keyframes.
