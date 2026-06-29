@@ -1173,6 +1173,345 @@ def api_label_save():
     return jsonify({"ok": True, "labeled_count": len(data)})
 
 
+@app.route("/api/label/autolabel", methods=["POST"])
+def api_label_autolabel():
+    """Propagate a labeled frame's rails to the following frames via optical flow
+    (for continuous/video sequences). Streams progress via SSE."""
+    folder = (request.form.get("folder") or "").strip()
+    annots = (request.form.get("annots") or "").strip()
+    start = os.path.basename((request.form.get("start_name") or "").strip())
+    try:
+        max_frames = int(request.form.get("max_frames", 0))  # 0 = all remaining
+    except ValueError:
+        max_frames = 0
+
+    files = list_folder_images(folder)
+    if files is None:
+        return jsonify({"error": f"Not a folder: {folder}"}), 400
+    if not annots.lower().endswith(".json") or not _annots_path_ok(annots):
+        return jsonify({"error": "Invalid annotations path."}), 400
+    data = _load_annotations(annots)
+    if start not in files:
+        return jsonify({"error": "Start image not in folder."}), 400
+    if start not in data:
+        return jsonify({"error": "Label the start frame first."}), 400
+    si = files.index(start)
+
+    FLOW_W = 960  # optical flow runs at this width for speed
+
+    def event_stream():
+        import json
+        import cv2
+        import numpy as np
+
+        def sse(obj):
+            return f"data: {json.dumps(obj)}\n\n"
+
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+
+        def load_gray(name):
+            im = Image.open(os.path.join(folder, name))
+            im.load()
+            ow, oh = im.size
+            nw = FLOW_W if ow > FLOW_W else ow
+            nh = max(1, round(oh * nw / ow))
+            g = np.array(im.convert("L").resize((nw, nh)), dtype=np.uint8)
+            # Boost local contrast so optical flow latches onto the rail edges
+            # instead of wandering on low-texture steel / repetitive ballast.
+            g = clahe.apply(g)
+            return g, ow, oh, nw / ow
+
+        def extend_bottom(pts, H, W):
+            """Extend the lowest rail point down to y = H-1 (training needs the
+            ego-path to reach the frame bottom)."""
+            if not pts:
+                return pts
+            bi = max(range(len(pts)), key=lambda i: pts[i][1])
+            b = pts[bi]
+            if b[1] >= H - 1:
+                return pts
+            others = [p for i, p in enumerate(pts) if i != bi]
+            x = float(b[0])
+            if others:
+                o = max(others, key=lambda p: p[1])
+                if o[1] != b[1]:
+                    x = b[0] + (b[0] - o[0]) / (b[1] - o[1]) * ((H - 1) - b[1])
+            nx = int(max(0, min(W - 1, round(x))))
+            return ([[nx, H - 1]] + pts) if bi == 0 else (pts + [[nx, H - 1]])
+
+        try:
+            seed_gray, ow, oh, sc = load_gray(start)
+            seed = data[start]
+            H, Wd = seed_gray.shape
+            N = 48                                  # y samples per rail
+            Wsearch = max(10, int(0.025 * Wd))      # horizontal search half-window
+
+            def grid_and_x(rail):
+                """Fixed y grid (flow coords, top→bottom) + rough x(grid) from seed."""
+                a = sorted(rail, key=lambda p: p[1])
+                ys = np.array([p[1] for p in a], dtype=np.float32) * sc
+                xs = np.array([p[0] for p in a], dtype=np.float32) * sc
+                gy = np.linspace(ys.min(), H - 1, N)
+                return gy, np.interp(gy, ys, xs)
+
+            gyL, gxL = grid_and_x(seed["left_rail"])
+            gyR, gxR = grid_and_x(seed["right_rail"])
+
+            def edge_map(gray):
+                e = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))   # vertical edges
+                return cv2.GaussianBlur(e, (0, 0), 1.5)
+
+            # Narrow search so a row can't latch onto an adjacent track's rail.
+            Wsearch = max(8, int(0.018 * Wd))
+
+            def snap_rows(edge, gy, pred):
+                """Per row, the strongest vertical edge near the predicted x (a
+                Gaussian prior keeps it from jumping to a neighbouring track)."""
+                sx = np.empty(len(gy)); ok = np.zeros(len(gy), bool)
+                cols = edge.shape[1]
+                for i in range(len(gy)):
+                    yy = int(round(min(max(gy[i], 0), edge.shape[0] - 1)))
+                    x0 = pred[i]
+                    lo = int(max(0, x0 - Wsearch)); hi = int(min(cols - 1, x0 + Wsearch))
+                    if hi <= lo:
+                        sx[i] = x0; continue
+                    xs = np.arange(lo, hi + 1)
+                    seg = edge[yy, lo:hi + 1]
+                    j = int(np.argmax(seg * np.exp(-((xs - x0) ** 2) / (2 * (Wsearch / 2.0) ** 2))))
+                    sx[i] = xs[j]
+                    ok[i] = seg[j] > np.mean(seg) + 1e-6     # a real edge, not flat region
+                return sx, ok
+
+            def fit2(gy, sx, ok, prev_coef):
+                """Robust 2nd-order fit (x = a + b*y + c*y^2) to inliers near the
+                previous curve, blended with it so the rail stays smooth/stable."""
+                pred = np.polyval(prev_coef, gy)
+                inl = ok & (np.abs(sx - pred) <= Wsearch)
+                if inl.sum() < 5:
+                    return prev_coef                          # not enough evidence → hold
+                c = np.polyfit(gy[inl], sx[inl], 2)
+                r = np.abs(np.polyval(c, gy) - sx)            # reject remaining outliers
+                inl2 = inl & (r <= np.median(r[inl]) * 2 + 2)
+                if inl2.sum() >= 5:
+                    c = np.polyfit(gy[inl2], sx[inl2], 2)
+                return 0.6 * c + 0.4 * prev_coef              # temporal smoothing
+
+            cL = np.polyfit(gyL, gxL, 2)
+            cR = np.polyfit(gyR, gxR, 2)
+            prevXL = np.polyval(cL, gyL); prevXR = np.polyval(cR, gyR)
+
+            # Include the seed frame so the user's rough clicks are snapped too.
+            targets = files[si:]
+            if max_frames > 0:
+                targets = targets[:max_frames + 1]
+            yield sse({"type": "status",
+                       "message": f"Auto-labeling {len(targets)} frames (rail detect · 2nd-order curve)…"})
+            done = 0
+            for k, name in enumerate(targets):
+                g, ow2, oh2, sc2 = load_gray(name)
+                e = edge_map(g)
+                cL = fit2(gyL, *snap_rows(e, gyL, prevXL), cL)
+                cR = fit2(gyR, *snap_rows(e, gyR, prevXR), cR)
+                prevXL = np.clip(np.polyval(cL, gyL), 0, e.shape[1] - 1)
+                prevXR = np.clip(np.polyval(cR, gyR), 0, e.shape[1] - 1)
+                left = [[int(round(x / sc2)), int(round(y / sc2))] for x, y in zip(prevXL, gyL)]
+                right = [[int(round(x / sc2)), int(round(y / sc2))] for x, y in zip(prevXR, gyR)]
+                data[name] = {"left_rail": left, "right_rail": right}
+                done += 1
+                yield sse({"type": "progress", "index": k + 1, "total": len(targets), "name": name})
+
+            tmp = annots + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, annots)
+            yield sse({"type": "done", "count": done, "labeled_total": len(data)})
+        except Exception as e:  # noqa: BLE001
+            yield sse({"type": "error", "error": str(e)})
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/api/label/detect_model", methods=["POST"])
+def api_label_detect_model():
+    """Auto-label every frame by running a trained model (default brilliant-horse-15)
+    and extracting the left/right rails from its prediction. No seed, no tracking."""
+    import numpy as np
+
+    folder = (request.form.get("folder") or "").strip()
+    annots = (request.form.get("annots") or "").strip()
+    model_name = (request.form.get("model") or "brilliant-horse-15").strip()
+    device = (request.form.get("device") or
+              ("cuda:0" if "cuda:0" in available_devices() else "cpu"))
+    crop_mode, crop_coords = _parse_crop(request.form)
+
+    files = list_folder_images(folder)
+    if files is None:
+        return jsonify({"error": f"Not a folder: {folder}"}), 400
+    if not files:
+        return jsonify({"error": "No images in folder."}), 400
+    if not annots.lower().endswith(".json") or not _annots_path_ok(annots):
+        return jsonify({"error": "Invalid annotations path."}), 400
+    try:
+        det_single, det_rnn = detectors_for_request(model_name, device, crop_mode, crop_coords)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    det = det_single or det_rnn
+    method = det.config.get("method", "segmentation")
+
+    def rails_from_result(res):
+        """Return (left_rail, right_rail) point lists from a detector result."""
+        if method == "segmentation":
+            arr = np.array(res.convert("L")) > 0
+            rows = np.where(arr.any(axis=1))[0]
+            if len(rows) < 2:
+                return None, None
+            grid = np.linspace(rows.min(), rows.max(), 48)
+            left, right = [], []
+            for y in grid:
+                yy = int(round(y)); cols = np.where(arr[yy])[0]
+                if len(cols):
+                    left.append([int(cols[0]), yy]); right.append([int(cols[-1]), yy])
+            return (left, right) if len(left) >= 2 else (None, None)
+        # regression / classification: detect() already returns [left, right]
+        if isinstance(res, (list, tuple)) and len(res) == 2:
+            L = [[int(x), int(y)] for x, y in res[0]]
+            R = [[int(x), int(y)] for x, y in res[1]]
+            return (L, R) if len(L) >= 2 and len(R) >= 2 else (None, None)
+        return None, None
+
+    data = _load_annotations(annots)
+
+    def event_stream():
+        import json
+
+        def sse(obj):
+            return f"data: {json.dumps(obj)}\n\n"
+
+        try:
+            yield sse({"type": "status",
+                       "message": f"Detecting rails with {model_name} on {len(files)} frames…"})
+            done = 0
+            for i, name in enumerate(files):
+                try:
+                    img = Image.open(os.path.join(folder, name))
+                    img.load()
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
+                    if det.temporal:
+                        det.reset_temporal()
+                    left, right = rails_from_result(det.detect(img))
+                    if left and right:
+                        data[name] = {"left_rail": left, "right_rail": right}
+                        done += 1
+                    else:
+                        yield sse({"type": "log", "name": name, "msg": "no rail detected"})
+                except Exception as e:  # noqa: BLE001
+                    yield sse({"type": "log", "name": name, "msg": str(e)})
+                if i % 5 == 0:
+                    yield sse({"type": "progress", "index": i + 1, "total": len(files), "name": name})
+            tmp = annots + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, annots)
+            yield sse({"type": "done", "count": done, "total": len(files), "labeled_total": len(data)})
+        except Exception as e:  # noqa: BLE001
+            yield sse({"type": "error", "error": str(e)})
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/api/label/interpolate", methods=["POST"])
+def api_label_interpolate():
+    """Fill unlabeled frames by interpolating between manually-labeled keyframes
+    (rails as x=f(y) at a fixed y grid). No optical flow → no drift/divergence."""
+    import json
+    import numpy as np
+
+    folder = (request.form.get("folder") or "").strip()
+    annots = (request.form.get("annots") or "").strip()
+    files = list_folder_images(folder)
+    if files is None:
+        return jsonify({"error": f"Not a folder: {folder}"}), 400
+    if not annots.lower().endswith(".json") or not _annots_path_ok(annots):
+        return jsonify({"error": "Invalid annotations path."}), 400
+    data = _load_annotations(annots)
+    keys = [i for i, f in enumerate(files) if f in data
+            and len(data[f].get("left_rail", [])) >= 2
+            and len(data[f].get("right_rail", [])) >= 2]
+    if len(keys) < 2:
+        return jsonify({"error": "Label at least 2 frames as keyframes first "
+                                 "(e.g. first and last), then Interpolate."}), 400
+
+    try:
+        from PIL import Image as _Img
+        H = _Img.open(os.path.join(folder, files[keys[0]])).size[1]
+    except Exception:  # noqa: BLE001
+        H = max(max(p[1] for p in data[files[k]]["left_rail"]) for k in keys) + 1
+    N = 48  # y samples per rail
+
+    def grid_for(rail_name):
+        top = min(min(p[1] for p in data[files[k]][rail_name]) for k in keys)
+        return np.linspace(top, H - 1, N)
+
+    gy = {"left_rail": grid_for("left_rail"), "right_rail": grid_for("right_rail")}
+
+    def x_on_grid(rail, grid):
+        a = sorted(rail, key=lambda p: p[1])
+        return np.interp(grid, [p[1] for p in a], [p[0] for p in a])
+
+    # Precompute each keyframe's x(grid) per rail.
+    kx = {r: {k: x_on_grid(data[files[k]][r], gy[r]) for k in keys}
+          for r in ("left_rail", "right_rail")}
+
+    def event_stream():
+        def sse(obj):
+            return f"data: {json.dumps(obj)}\n\n"
+
+        def rail_points(xarr, grid):
+            return [[int(round(x)), int(round(y))] for x, y in zip(xarr, grid)]
+
+        try:
+            yield sse({"type": "status",
+                       "message": f"Interpolating {len(files)} frames between {len(keys)} keyframes…"})
+            done = 0
+            for i, name in enumerate(files):
+                if name in data and i in keys:
+                    continue  # keep manual keyframes as-is
+                # locate surrounding keyframes
+                lo = max([k for k in keys if k <= i], default=keys[0])
+                hi = min([k for k in keys if k >= i], default=keys[-1])
+                t = 0.0 if hi == lo else (i - lo) / (hi - lo)
+                out = {}
+                for r in ("left_rail", "right_rail"):
+                    xa = kx[r][lo] * (1 - t) + kx[r][hi] * t
+                    out[r] = rail_points(xa, gy[r])
+                data[name] = out
+                done += 1
+                if i % 10 == 0:
+                    yield sse({"type": "progress", "index": i + 1, "total": len(files), "name": name})
+            tmp = annots + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, annots)
+            yield sse({"type": "done", "count": done, "labeled_total": len(data)})
+        except Exception as e:  # noqa: BLE001
+            yield sse({"type": "error", "error": str(e)})
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.route("/api/label/delete", methods=["POST"])
 def api_label_delete():
     import json
@@ -1188,6 +1527,21 @@ def api_label_delete():
             json.dump(data, f)
         os.replace(tmp, annots)
     return jsonify({"ok": True, "labeled_count": len(data)})
+
+
+@app.route("/api/label/clear_all", methods=["POST"])
+def api_label_clear_all():
+    """Remove every label in an annotations file (reset the whole folder)."""
+    import json
+    annots = (request.form.get("annots") or "").strip()
+    if not annots.lower().endswith(".json") or not _annots_path_ok(annots):
+        return jsonify({"error": "Invalid annotations path."}), 400
+    removed = len(_load_annotations(annots))
+    tmp = annots + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({}, f)
+    os.replace(tmp, annots)
+    return jsonify({"ok": True, "removed": removed})
 
 
 # --------------------------------------------------------------------------- #

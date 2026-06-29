@@ -352,108 +352,130 @@
   <div class="layout" id="pageTrain" style="display:none;">
     <aside class="sidebar">
       <div class="card span2">
-        <h2>RNN Transfer Learning</h2>
-        <label>Base model (per-frame)</label>
+        <h2>RNN 전이학습</h2>
+        <label>베이스 모델 (프레임 단위)</label>
         <select id="trBase"></select>
         <div class="info" id="trBaseInfo"></div>
       </div>
 
       <div class="card span2">
-        <h2>Dataset</h2>
-        <label>Images folder (server path)</label>
+        <h2>데이터셋</h2>
+        <label>이미지 폴더 (서버 경로)</label>
         <div class="grid2">
           <input type="text" id="trImages" placeholder="/data3/.../images" />
-          <button class="btn" id="trBrowseBtn" style="margin-top:0;background:#455a64;">Browse…</button>
+          <button class="btn" id="trBrowseBtn" style="margin-top:0;background:#455a64;">탐색…</button>
         </div>
         <div class="browser" id="trBrowser" style="display:none;"></div>
-        <label style="margin-top:8px;">Annotations JSON (server path)</label>
+        <label style="margin-top:8px;">주석 JSON (서버 경로)</label>
         <input type="text" id="trAnnots" placeholder="/data3/.../egopath.json" />
-        <div class="info" id="trDataInfo">Training needs labeled ego-path annotations, not just images.</div>
+        <div class="info" id="trDataInfo">학습에는 이미지뿐 아니라 ego-path 정답 주석(라벨)이 필요합니다.</div>
       </div>
 
       <div class="card">
-        <h2>Epochs</h2>
+        <h2>에폭(Epochs)</h2>
         <input type="number" id="trEpochs" value="50" min="1" />
       </div>
       <div class="card">
-        <h2>Batch size</h2>
+        <h2>배치 크기</h2>
         <input type="number" id="trBatch" value="32" min="1" />
       </div>
       <div class="card">
-        <h2>Learning rate</h2>
+        <h2>학습률</h2>
         <input type="number" id="trLr" value="0.0001" step="0.0001" min="0" />
       </div>
       <div class="card">
-        <h2>Train GPU</h2>
+        <h2>학습 GPU</h2>
         <select id="trGpu"></select>
       </div>
 
       <div class="card span2">
-        <h2>Options</h2>
+        <h2>옵션</h2>
         <label class="radio-row" style="margin-bottom:6px;">
-          <input type="checkbox" id="trFinetune" /> Fine-tune base too (default: base frozen = transfer)
+          <input type="checkbox" id="trFinetune" /> 베이스도 미세조정 (기본: 베이스 동결 = 전이학습)
+        </label>
+        <label class="radio-row" style="margin-bottom:6px;">
+          <input type="checkbox" id="trGpuPre" checked /> GPU 전처리 (시간적 학습 가속)
         </label>
         <label class="radio-row">
-          <input type="checkbox" id="trGpuPre" checked /> GPU preprocessing (faster temporal training)
+          <input type="checkbox" id="trMultiGpu" /> <span id="trMultiGpuLbl">여러 GPU 사용 (DataParallel)</span>
         </label>
       </div>
 
-      <button class="btn run span2" id="trStartBtn">Start training</button>
-      <button class="btn stop span2" id="trStopBtn" disabled>Stop training</button>
-      <div class="status-line span2" id="trStatus">Ready</div>
+      <button class="btn run span2" id="trStartBtn">학습 시작</button>
+      <button class="btn stop span2" id="trStopBtn" disabled>학습 정지</button>
+      <div class="status-line span2" id="trStatus">준비됨</div>
     </aside>
 
     <main class="main">
       <div class="metric-row">
-        <div class="metric"><div class="lbl">Epoch</div><div class="val" id="mEpoch">—</div></div>
-        <div class="metric"><div class="lbl">Train loss</div><div class="val" id="mTrain">—</div></div>
-        <div class="metric"><div class="lbl">Val loss</div><div class="val" id="mVal">—</div></div>
-        <div class="metric"><div class="lbl">Output model</div><div class="val" id="mOut" style="font-size:14px;">—</div></div>
+        <div class="metric"><div class="lbl">에폭</div><div class="val" id="mEpoch">—</div></div>
+        <div class="metric"><div class="lbl">학습 손실</div><div class="val" id="mTrain">—</div></div>
+        <div class="metric"><div class="lbl">검증 손실</div><div class="val" id="mVal">—</div></div>
+        <div class="metric"><div class="lbl">출력 모델</div><div class="val" id="mOut" style="font-size:14px;">—</div></div>
       </div>
       <div class="progress-wrap" id="trProgWrap" style="display:block;"><div class="progress-bar" id="trProgBar"></div></div>
-      <div class="train-log" id="trLog">No training run yet. Pick a base model and press “Start training”.</div>
+      <div class="train-log" id="trLog">아직 학습 기록 없음. 베이스 모델을 고르고 “학습 시작”을 누르세요.</div>
     </main>
   </div>
 
   <div class="layout" id="pageLabel">
     <aside class="sidebar">
       <div class="card span2">
-        <h2>Label dataset</h2>
-        <label>Images folder (server path)</label>
+        <h2>데이터셋 라벨링</h2>
+        <label>이미지 폴더 (서버 경로)</label>
         <div class="grid2">
           <input type="text" id="lblFolder" placeholder="/data3/.../images" />
-          <button class="btn" id="lblBrowseBtn" style="margin-top:0;background:#455a64;">Browse…</button>
+          <button class="btn" id="lblBrowseBtn" style="margin-top:0;background:#455a64;">탐색…</button>
         </div>
         <div class="browser" id="lblBrowser" style="display:none;"></div>
-        <label style="margin-top:8px;">Annotations JSON (output, server path)</label>
+        <label style="margin-top:8px;">주석 JSON (출력, 서버 경로)</label>
         <input type="text" id="lblAnnots" placeholder="auto: <folder>/egopath_labels.json" />
-        <div class="info">Pick a folder above — images load automatically.</div>
+        <div class="info">위에서 폴더를 선택하면 이미지가 자동으로 로드됩니다.</div>
       </div>
 
       <div class="card span2">
-        <h2>Rail being drawn</h2>
+        <h2>그리는 레일</h2>
         <div class="rail-btns">
-          <button class="btn lon" id="lblLeftBtn" style="flex:1;">Left rail</button>
-          <button class="btn off" id="lblRightBtn" style="flex:1;">Right rail</button>
+          <button class="btn lon" id="lblLeftBtn" style="flex:1;">왼쪽 레일</button>
+          <button class="btn off" id="lblRightBtn" style="flex:1;">오른쪽 레일</button>
         </div>
-        <div class="info">Click empty space to add a point · drag a node to move it · right-click a node to delete.</div>
+        <div class="info">빈 곳 클릭=점 추가 · 점 드래그=이동 · 점 우클릭=삭제</div>
         <div class="rail-btns" style="margin-top:6px;">
-          <button class="btn" id="lblUndoBtn" style="flex:1;background:#6b7280;">Undo point</button>
-          <button class="btn" id="lblClearBtn" style="flex:1;background:#9e9e9e;">Clear rail</button>
+          <button class="btn" id="lblUndoBtn" style="flex:1;background:#6b7280;">점 취소</button>
+          <button class="btn" id="lblClearBtn" style="flex:1;background:#9e9e9e;">레일 지우기</button>
+          <button class="btn" id="lblClearAllBtn" style="flex:1;background:#c62828;">모두 지우기</button>
         </div>
-        <label style="margin-top:8px;">Line width: <span id="lblLwVal">5</span> px</label>
+        <label style="margin-top:8px;">선 굵기: <span id="lblLwVal">5</span> px</label>
         <input type="range" id="lblLineWidth" min="1" max="15" value="5" style="width:100%;" />
       </div>
 
-      <button class="btn run span2" id="lblSaveBtn">Save &amp; Next →</button>
+      <button class="btn run span2" id="lblSaveBtn">저장 &amp; 다음 →</button>
       <div class="rail-btns span2" style="margin-top:6px;">
-        <button class="btn" id="lblPrevBtn" style="flex:1;background:#607d8b;">← Prev</button>
-        <button class="btn" id="lblNextBtn" style="flex:1;background:#607d8b;">Next →</button>
+        <button class="btn" id="lblPrevBtn" style="flex:1;background:#607d8b;">← 이전</button>
+        <button class="btn" id="lblNextBtn" style="flex:1;background:#607d8b;">다음 →</button>
       </div>
-      <div class="status-line span2" id="lblStatus">Set folder + annotations JSON, then Load images.</div>
+      <div class="card span2">
+        <h2>보간 (키프레임) — 권장</h2>
+        <div class="info">시퀀스에서 몇 프레임만 라벨링(예: 처음·중간·끝)한 뒤, 사이 프레임을 보간으로 채웁니다. 드리프트 없이 안정적이며, 레일이 휘는 구간엔 키프레임을 더 추가하세요.</div>
+        <button class="btn" id="lblInterpBtn" style="margin-top:6px;background:#2e7d32;">라벨된 프레임 사이 보간</button>
+      </div>
+      <div class="card span2">
+        <h2>자동 라벨 (광학 흐름)</h2>
+        <div class="info">현재 프레임의 레일을 추적으로 이후 프레임에 전파합니다. 빠르지만 텍스처 없는 레일에선 벗어날 수 있어, 위의 보간을 권장합니다.</div>
+        <div class="grid2" style="margin-top:6px;">
+          <div>
+            <label>프레임 수 (0=전체)</label>
+            <input type="number" id="lblAutoN" value="0" min="0" />
+          </div>
+          <button class="btn" id="lblAutoBtn" style="margin-top:0;background:#8e24aa;">자동 라벨 →</button>
+        </div>
+      </div>
+      <div class="progress-wrap span2" id="lblProgWrap"><div class="progress-bar" id="lblProgBar"></div></div>
+      <div class="status-line span2" id="lblStatus">폴더와 주석 JSON을 설정하면 이미지를 불러옵니다.</div>
 
       <div class="card span2">
-        <h2>Images <span id="lblCount" style="color:var(--muted);font-weight:400;"></span></h2>
+        <h2>이미지 <span id="lblCount" style="color:var(--muted);font-weight:400;"></span></h2>
+        <button class="btn" id="lblClearAllFilesBtn" style="background:#c62828;margin-bottom:6px;">모든 파일 라벨 삭제</button>
         <div class="img-list" id="lblList"></div>
       </div>
     </aside>
@@ -1229,13 +1251,33 @@
     function o2d(p) { return [p[0] * lbl.dispW / lbl.origW, p[1] * lbl.dispH / lbl.origH]; }
     function drawRail(pts, color) {
       if (!pts.length) return;
-      const lw = lbl.lineWidth, r = Math.max(3, lw * 1.3);
-      lblCtx.strokeStyle = color; lblCtx.fillStyle = color; lblCtx.lineWidth = lw;
+      const lw = lbl.lineWidth;
+      // polyline
+      lblCtx.save();
+      lblCtx.strokeStyle = color; lblCtx.lineWidth = lw;
       lblCtx.lineJoin = "round"; lblCtx.lineCap = "round";
       lblCtx.beginPath();
       pts.forEach((p, i) => { const [x, y] = o2d(p); i ? lblCtx.lineTo(x, y) : lblCtx.moveTo(x, y); });
       lblCtx.stroke();
-      pts.forEach((p) => { const [x, y] = o2d(p); lblCtx.beginPath(); lblCtx.arc(x, y, r, 0, 7); lblCtx.fill(); });
+      lblCtx.restore();
+      // glowing, pulsing nodes (bright white core + colored halo)
+      const base = Math.max(6, lw * 2.0);
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 280);  // 0..1
+      pts.forEach((p) => {
+        const [x, y] = o2d(p);
+        lblCtx.save();
+        lblCtx.shadowColor = color;
+        lblCtx.shadowBlur = 10 + 16 * pulse;
+        lblCtx.fillStyle = color;
+        lblCtx.globalAlpha = 0.30 + 0.40 * pulse;       // pulsing halo
+        lblCtx.beginPath(); lblCtx.arc(x, y, base + 5 * pulse, 0, 7); lblCtx.fill();
+        lblCtx.globalAlpha = 1; lblCtx.shadowBlur = 6;
+        lblCtx.fillStyle = "#fff";                        // bright core
+        lblCtx.beginPath(); lblCtx.arc(x, y, base * 0.55, 0, 7); lblCtx.fill();
+        lblCtx.fillStyle = color;                         // colored center dot
+        lblCtx.beginPath(); lblCtx.arc(x, y, base * 0.34, 0, 7); lblCtx.fill();
+        lblCtx.restore();
+      });
     }
     function redrawLabel() {
       lblCtx.clearRect(0, 0, lblCanvas.width, lblCanvas.height);
@@ -1288,6 +1330,14 @@
     function endDrag() { lblDrag = null; }
     lblCanvas.onmouseup = endDrag;
     lblCanvas.onmouseleave = endDrag;
+    // Continuously redraw while labeling so the nodes pulse/glow.
+    function lblAnimate() {
+      if ($("pageLabel").style.display !== "none" && lbl.idx >= 0 && lbl.img.complete) {
+        redrawLabel();
+      }
+      requestAnimationFrame(lblAnimate);
+    }
+    requestAnimationFrame(lblAnimate);
     // Right-click a node to delete it (handy for fixing mistakes).
     lblCanvas.oncontextmenu = (e) => {
       e.preventDefault();
@@ -1301,22 +1351,55 @@
     };
     $("lblUndoBtn").onclick = () => { (lbl.rail === "left" ? lbl.left : lbl.right).pop(); redrawLabel(); };
     $("lblClearBtn").onclick = () => { if (lbl.rail === "left") lbl.left = []; else lbl.right = []; redrawLabel(); };
+    $("lblClearAllBtn").onclick = () => { lbl.left = []; lbl.right = []; redrawLabel(); };
+    // Delete labels for ALL files in the current annotations JSON.
+    $("lblClearAllFilesBtn").onclick = async () => {
+      const annots = $("lblAnnots").value.trim();
+      if (!annots) { $("lblStatus").textContent = "주석 JSON 경로가 없습니다."; return; }
+      if (!confirm("모든 파일의 라벨을 삭제합니다. 되돌릴 수 없습니다. 계속할까요?")) return;
+      const fd = new FormData(); fd.append("annots", annots);
+      const r = await (await fetch("/api/label/clear_all", { method: "POST", body: fd })).json();
+      if (r.error) { $("lblStatus").textContent = "삭제 오류: " + r.error; return; }
+      lbl.images.forEach((im) => im.labeled = false);
+      renderImgList();
+      $("lblCount").textContent = `(${lbl.images.length}, 라벨 0)`;
+      lbl.left = []; lbl.right = []; redrawLabel();
+      $("lblStatus").textContent = `모든 파일 라벨 삭제 완료 (${r.removed}개 제거)`;
+    };
     $("lblLineWidth").oninput = () => {
       lbl.lineWidth = parseInt($("lblLineWidth").value, 10);
       $("lblLwVal").textContent = lbl.lineWidth;
       redrawLabel();
     };
 
+    // The ego-path starts at the frame bottom; training requires each rail to
+    // reach the last image row, so extend the lowest point down to y = H-1.
+    function extendBottom(pts, H, W) {
+      if (pts.length < 1) return pts;
+      let bi = 0; for (let i = 1; i < pts.length; i++) if (pts[i][1] > pts[bi][1]) bi = i;
+      const b = pts[bi];
+      if (b[1] >= H - 1) return pts;
+      let o = null, best = -1;
+      for (let i = 0; i < pts.length; i++) { if (i === bi) continue; const dy = b[1] - pts[i][1]; if (dy > best) { best = dy; o = pts[i]; } }
+      let x = b[0];
+      if (o && o[1] !== b[1]) x = b[0] + (b[0] - o[0]) / (b[1] - o[1]) * ((H - 1) - b[1]);
+      x = Math.max(0, Math.min(W - 1, Math.round(x)));
+      const res = pts.slice();
+      bi === 0 ? res.unshift([x, H - 1]) : res.push([x, H - 1]);
+      return res;
+    }
     async function saveLabel() {
       if (lbl.idx < 0) return false;
       if (lbl.left.length < 2 || lbl.right.length < 2) {
         $("lblStatus").textContent = "Each rail needs at least 2 points."; return false;
       }
+      const L = extendBottom(lbl.left, lbl.origH, lbl.origW);
+      const R = extendBottom(lbl.right, lbl.origH, lbl.origW);
       const fd = new FormData();
       fd.append("annots", $("lblAnnots").value.trim());
       fd.append("name", lbl.images[lbl.idx].name);
-      fd.append("left_rail", JSON.stringify(lbl.left));
-      fd.append("right_rail", JSON.stringify(lbl.right));
+      fd.append("left_rail", JSON.stringify(L));
+      fd.append("right_rail", JSON.stringify(R));
       const d = await (await fetch("/api/label/save", { method: "POST", body: fd })).json();
       if (d.error) { $("lblStatus").textContent = "Save error: " + d.error; return false; }
       lbl.images[lbl.idx].labeled = true; renderImgList();
@@ -1326,6 +1409,88 @@
     $("lblSaveBtn").onclick = async () => { if (await saveLabel()) { $("lblStatus").textContent = "Saved ✓"; loadLabelImage(lbl.idx + 1); } };
     $("lblPrevBtn").onclick = () => loadLabelImage(lbl.idx - 1);
     $("lblNextBtn").onclick = () => loadLabelImage(lbl.idx + 1);
+
+    // Propagate the current (saved) frame's rails to following frames.
+    $("lblAutoBtn").onclick = async () => {
+      if (lbl.idx < 0) { $("lblStatus").textContent = "Open an image first."; return; }
+      if (!(await saveLabel())) return;  // current frame is the seed; must be valid
+      const startName = lbl.images[lbl.idx].name;
+      $("lblStatus").textContent = "Auto-labeling…";
+      const fd = new FormData();
+      fd.append("folder", $("lblFolder").value.trim());
+      fd.append("annots", $("lblAnnots").value.trim());
+      fd.append("start_name", startName);
+      fd.append("max_frames", $("lblAutoN").value || "0");
+      try {
+        const res = await fetch("/api/label/autolabel", { method: "POST", body: fd });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }
+        const reader = res.body.getReader(); const dec = new TextDecoder();
+        let buf = "", li = 0;
+        const idxByName = {}; lbl.images.forEach((im, i) => idxByName[im.name] = i);
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf("\n\n", li)) >= 0) {
+            const chunk = buf.slice(li, idx).trim(); li = idx + 2;
+            if (!chunk.startsWith("data:")) continue;
+            let m; try { m = JSON.parse(chunk.slice(5).trim()); } catch (_) { continue; }
+            if (m.type === "status") { $("lblStatus").textContent = m.message; }
+            else if (m.type === "progress") {
+              $("lblProgBar").style.width = Math.round((m.index / m.total) * 100) + "%";
+              $("lblStatus").textContent = `Auto-labeling ${m.index}/${m.total}: ${m.name}`;
+              if (m.name in idxByName) { lbl.images[idxByName[m.name]].labeled = true; }
+            } else if (m.type === "done") {
+              renderImgList();
+              $("lblCount").textContent = `(${lbl.images.length}, labeled ${m.labeled_total})`;
+              $("lblStatus").textContent = `Auto-labeled ${m.count} frames ✓ — review & fix as needed.`;
+              $("lblProgBar").style.width = "0%";
+            } else if (m.type === "error") { $("lblStatus").textContent = "Error: " + m.error; }
+          }
+          buf = buf.slice(li); li = 0;
+        }
+      } catch (e) { $("lblStatus").textContent = "Error: " + e.message; }
+    };
+
+    // Fill all frames by interpolating between manually-labeled keyframes.
+    $("lblInterpBtn").onclick = async () => {
+      if (lbl.idx >= 0) await saveLabel();  // save current edits as a keyframe first
+      $("lblStatus").textContent = "Interpolating…";
+      const fd = new FormData();
+      fd.append("folder", $("lblFolder").value.trim());
+      fd.append("annots", $("lblAnnots").value.trim());
+      try {
+        const res = await fetch("/api/label/interpolate", { method: "POST", body: fd });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }
+        const reader = res.body.getReader(); const dec = new TextDecoder();
+        let buf = "", li = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf("\n\n", li)) >= 0) {
+            const chunk = buf.slice(li, idx).trim(); li = idx + 2;
+            if (!chunk.startsWith("data:")) continue;
+            let m; try { m = JSON.parse(chunk.slice(5).trim()); } catch (_) { continue; }
+            if (m.type === "status") { $("lblStatus").textContent = m.message; }
+            else if (m.type === "progress") {
+              $("lblProgBar").style.width = Math.round((m.index / m.total) * 100) + "%";
+              $("lblStatus").textContent = `Interpolating ${m.index}/${m.total}…`;
+            } else if (m.type === "done") {
+              lbl.images.forEach((im) => im.labeled = true);
+              renderImgList();
+              $("lblCount").textContent = `(${lbl.images.length}, labeled ${m.labeled_total})`;
+              $("lblStatus").textContent = `Interpolated ${m.count} frames ✓ — review & add keyframes where it's off.`;
+              $("lblProgBar").style.width = "0%";
+              if (lbl.idx >= 0) loadLabelImage(lbl.idx);
+            } else if (m.type === "error") { $("lblStatus").textContent = "Error: " + m.error; }
+          }
+          buf = buf.slice(li); li = 0;
+        }
+      } catch (e) { $("lblStatus").textContent = "Error: " + e.message; }
+    };
 
     // ----- Training -----
     let trainController = null;
