@@ -30,3 +30,5 @@ _workspace/
 
 # Web app training log
 train_web.log
+# Web app server log
+web_app.log
