@@ -1525,6 +1525,14 @@
           g.appendChild(o);
         });
         if (!d.gpus.length) { const o = document.createElement("option"); o.value=""; o.textContent="(auto)"; g.appendChild(o); }
+        // Multi-GPU only makes sense with ≥2 full GPUs.
+        const canMulti = d.gpus.length >= 2;
+        $("trMultiGpu").disabled = !canMulti;
+        if (!canMulti) $("trMultiGpu").checked = false;
+        $("trMultiGpuLbl").textContent = canMulti
+          ? `여러 GPU 사용 — ${d.gpus.length}개 GPU DataParallel`
+          : "여러 GPU 사용 (풀 GPU 2개 이상 필요 — 현재 1개)";
+        $("trMultiGpu").onchange = () => { $("trGpu").disabled = $("trMultiGpu").checked; };
         $("trEpochs").value = d.defaults.epochs;
         $("trBatch").value = d.defaults.batch_size;
         $("trLr").value = d.defaults.learning_rate;
@@ -1605,6 +1613,7 @@
       fd.append("gpu_uuid", $("trGpu").value);
       fd.append("finetune_base", $("trFinetune").checked ? "true" : "false");
       fd.append("gpu_preprocess", $("trGpuPre").checked ? "true" : "false");
+      fd.append("multi_gpu", $("trMultiGpu").checked ? "true" : "false");
       fd.append("images_path", $("trImages").value.trim());
       fd.append("annotations_path", $("trAnnots").value.trim());
       try {

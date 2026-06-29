@@ -1628,6 +1628,10 @@ def api_train_start():
         finetune = request.form.get("finetune_base") == "true"
         gpu_pre = request.form.get("gpu_preprocess") == "true"
         gpu_uuid = (request.form.get("gpu_uuid") or "").strip()
+        multi_gpu = request.form.get("multi_gpu") == "true"
+        full_gpus = list_full_gpus()
+        if multi_gpu and len(full_gpus) < 2:
+            multi_gpu = False  # nothing to parallelise over
 
         images_path = (request.form.get("images_path") or "").strip()
         annotations_path = (request.form.get("annotations_path") or "").strip()
@@ -1652,9 +1656,14 @@ def api_train_start():
         # GPU preprocessing is only implemented for the regression method.
         if gpu_pre and method == "regression":
             cmd.append("--gpu-preprocess")
+        if multi_gpu:
+            cmd.append("--multi-gpu")
 
         env = os.environ.copy()
-        if gpu_uuid:
+        if multi_gpu:
+            # Make all full (non-MIG) GPUs visible so DataParallel can use them.
+            env["CUDA_VISIBLE_DEVICES"] = ",".join(g["uuid"] for g in full_gpus)
+        elif gpu_uuid:
             env["CUDA_VISIBLE_DEVICES"] = gpu_uuid  # pin training to one full GPU
         log_path = os.path.join(BASE_PATH, "train_web.log")
         logf = open(log_path, "w")
@@ -1665,7 +1674,8 @@ def api_train_start():
             "output": f"{base}RNN",
             "args": {"base": base, "method": method, "backbone": backbone,
                      "epochs": epochs, "lr": lr, "batch": batch,
-                     "finetune": finetune, "gpu_preprocess": gpu_pre},
+                     "finetune": finetune, "gpu_preprocess": gpu_pre,
+                     "multi_gpu": multi_gpu},
         })
     return jsonify({"ok": True, "output": f"{base}RNN", "cmd": " ".join(cmd)})
 
