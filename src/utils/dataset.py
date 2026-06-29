@@ -69,7 +69,7 @@ class PathsDataset(Dataset):
 
     def __getitem__(self, idx):
         img_name = self.imgs[idx]
-        img = Image.open(os.path.join(self.imgs_path, img_name))
+        img = Image.open(os.path.join(self.imgs_path, img_name)).convert("RGB")
         annotation = self.annotations[img_name]
         rails_mask = self.generate_rails_mask(img.size, annotation)
         img, rails_mask = self.random_crop(img, rails_mask)
@@ -319,7 +319,7 @@ class SequencePathsDataset(PathsDataset):
             return self._getitem_thin(idx)
 
         img_name = self.imgs[idx]
-        img = Image.open(os.path.join(self.imgs_path, img_name))
+        img = Image.open(os.path.join(self.imgs_path, img_name)).convert("RGB")
         annotation = self.annotations[img_name]
         rails_mask = self.generate_rails_mask(img.size, annotation)
         current_box = self.random_crop_box(img, rails_mask)
