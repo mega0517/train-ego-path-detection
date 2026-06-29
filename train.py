@@ -91,13 +91,16 @@ def parse_arguments():
                         help="Override the images directory from the global config.")
     parser.add_argument("--annotations-path", type=str, default=None,
                         help="Override the annotations JSON from the global config.")
+    parser.add_argument("--multi-gpu", action="store_true",
+                        help="Use all visible CUDA GPUs via DataParallel (splits the batch).")
     return parser.parse_args()
 
 
 def load_base_weights(base_net, ckpt_path, device):
     """Loads per-frame weights into a base net, stripping any torch.compile prefix."""
     state = torch.load(ckpt_path, map_location=device)
-    state = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
+    state = {k.replace("_orig_mod.", "").replace("module.", ""): v
+             for k, v in state.items()}
     base_net.load_state_dict(state)
 
 
@@ -319,10 +322,22 @@ def main(args):
             for param in model.base.parameters():
                 param.requires_grad = False
             model.base.eval()
-    try:
-        model = torch.compile(model)
-    except Exception as e:
-        print(f"torch.compile failed: {e}. Running model without compilation.")
+
+    # Multi-GPU via DataParallel (batch split across all visible GPUs). Done after
+    # base load/freeze so those still touch the raw model. torch.compile is skipped
+    # in this path because compiling a DataParallel wrapper is unreliable.
+    use_multi = args.multi_gpu and torch.cuda.is_available() and torch.cuda.device_count() > 1
+    if use_multi:
+        logger.info(f"\n[multi-gpu] DataParallel over {torch.cuda.device_count()} GPUs "
+                    f"(batch {config['batch_size']} split across them).")
+        model = torch.nn.DataParallel(model)
+    else:
+        if args.multi_gpu:
+            logger.info("\n[multi-gpu] requested but <2 GPUs visible; using a single GPU.")
+        try:
+            model = torch.compile(model)
+        except Exception as e:
+            print(f"torch.compile failed: {e}. Running model without compilation.")
 
     # Run W&B offline by default so no account/login is required. Set
     # WANDB_MODE=online (and log in) to sync to the cloud dashboard instead.

@@ -114,7 +114,8 @@ class Detector:
         state = torch.load(
             os.path.join(self.model_path, "best.pt"), map_location=self.device
         )
-        state = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
+        state = {k.replace("_orig_mod.", "").replace("module.", ""): v
+                 for k, v in state.items()}
         model.load_state_dict(state)
         return model
 
