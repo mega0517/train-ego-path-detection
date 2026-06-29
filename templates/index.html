@@ -1511,13 +1511,13 @@
           $("trGpuPre").disabled = !reg;
           if (!reg) $("trGpuPre").checked = false;
           $("trBaseInfo").textContent = reg
-            ? "RNN trained on this base → saved as <base>RNN. GPU preprocessing available."
-            : `RNN trained on this base → saved as <base>RNN. GPU preprocessing is regression-only (disabled for ${method}).`;
+            ? "이 베이스로 RNN 학습 → <base>RNN 저장. GPU 전처리 사용 가능."
+            : `이 베이스로 RNN 학습 → <base>RNN 저장. GPU 전처리는 regression 전용(${method}에선 비활성).`;
         };
         sel.onchange();
         $("trBaseInfo").textContent = d.base_models.length
-          ? "RNN will be trained on top of this base and saved as <base>RNN."
-          : "No base models found.";
+          ? "이 베이스 위에 RNN을 학습해 <base>RNN으로 저장합니다."
+          : "베이스 모델이 없습니다.";
         const g = $("trGpu"); g.innerHTML = "";
         d.gpus.forEach((gp) => {
           const o = document.createElement("option");
