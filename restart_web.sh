@@ -10,9 +10,17 @@ set -e
 cd "$(dirname "$0")"
 PORT="${PORT:-5000}"
 
-# Stop any running web app (frees the port).
-pkill -f 'web_app.py' 2>/dev/null || true
-sleep 1
+# Stop whatever is bound to $PORT (frees the port). Identifying the process by
+# its listening socket avoids command-line matching, which could otherwise
+# signal unrelated shells that merely mention web_app.py in their arguments.
+OLD_PID="$(ss -ltnpH 2>/dev/null | grep -oP "(?<=:$PORT )[^\n]*pid=\K[0-9]+" | head -1)"
+if [ -z "$OLD_PID" ]; then
+    OLD_PID="$(ss -ltnp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$"' | grep -oP 'pid=\K[0-9]+' | head -1)"
+fi
+if [ -n "$OLD_PID" ]; then
+    kill "$OLD_PID" 2>/dev/null || true
+    sleep 1
+fi
 
 if [ -n "${WEB_AUTH_PASS:-}" ]; then
     export WEB_AUTH_PASS
