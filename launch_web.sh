@@ -28,6 +28,10 @@ if [ -z "${CUDA_VISIBLE_DEVICES+x}" ] && command -v nvidia-smi >/dev/null 2>&1; 
     fi
 fi
 
+# Ensure the bundled unrar binary exists (for .rar extraction in the File
+# Browser tab). Best-effort: never block startup if the download fails.
+[ -x "bin/unrar" ] || ./setup_unrar.sh || echo "WARNING: unrar setup skipped; .rar extraction unavailable."
+
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-5000}"
 

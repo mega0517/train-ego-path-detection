@@ -32,3 +32,6 @@ _workspace/
 train_web.log
 # Web app server log
 web_app.log
+
+# Bundled runtime binaries (e.g. unrar for the File Browser tab) — fetched per-host
+bin/

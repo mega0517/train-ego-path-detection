@@ -24,7 +24,7 @@ import threading
 
 import torch
 import yaml
-from flask import Flask, jsonify, render_template, request, Response, stream_with_context
+from flask import Flask, jsonify, render_template, request, Response, send_file, stream_with_context
 from PIL import Image
 
 # Register HEIC/HEIF support (iPhone photos) with PIL when available.
@@ -934,6 +934,501 @@ def api_upload_zip():
         if os.path.exists(tmp.name):
             os.unlink(tmp.name)  # remove the uploaded archive after extraction
     return jsonify({"ok": True, "path": dest, "extracted": extracted, "skipped": skipped})
+
+
+# ---------------------------------------------------------------------------
+# File browser tab: move / extract (all formats) / preview / download
+# ---------------------------------------------------------------------------
+_FB_TEXT_MAX = 1024 * 1024  # 1 MB text-preview cap
+_FB_TEXT_EXT = {
+    ".txt", ".md", ".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml",
+    ".ini", ".cfg", ".conf", ".sh", ".bash", ".c", ".cpp", ".h", ".hpp",
+    ".java", ".go", ".rs", ".rb", ".php", ".html", ".css", ".xml", ".csv",
+    ".tsv", ".log", ".sql", ".env", ".gitignore", ".dockerfile", ".m", ".lua",
+}
+_FB_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico"}
+
+
+def _fb_archive_kind(name):
+    """Return 'zip'|'tar'|'single'|'7z'|'rar'|None for an archive filename."""
+    low = name.lower()
+    if low.endswith(".zip"):
+        return "zip"
+    if low.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2",
+                     ".tar.xz", ".txz")):
+        return "tar"
+    if low.endswith(".7z"):
+        return "7z"
+    if low.endswith(".rar"):
+        return "rar"
+    if low.endswith((".gz", ".bz2", ".xz")):
+        return "single"
+    return None
+
+
+def _fb_unrar_tool():
+    """Return a path to an unrar binary: the bundled copy first, then PATH."""
+    import shutil
+
+    bundled = os.path.join(BASE_PATH, "bin", "unrar")
+    if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+        return bundled
+    return shutil.which("unrar")
+
+
+def _fb_no_traversal(members, base):
+    """Reject archive members whose extracted path would escape *base*."""
+    base_real = os.path.realpath(base)
+    for m in members:
+        target = os.path.realpath(os.path.join(base, m))
+        if target != base_real and not target.startswith(base_real + os.sep):
+            raise ValueError(f"Unsafe path inside archive: {m}")
+
+
+def _fb_extract(src_full, dest_full):
+    """Extract *src_full* into *dest_full*. Returns a human-readable message."""
+    import bz2
+    import gzip
+    import lzma
+    import shutil
+    import tarfile
+    import zipfile
+
+    os.makedirs(dest_full, exist_ok=True)
+    name = os.path.basename(src_full)
+    kind = _fb_archive_kind(name)
+
+    if kind == "zip":
+        with zipfile.ZipFile(src_full) as zf:
+            _fb_no_traversal(zf.namelist(), dest_full)
+            zf.extractall(dest_full)
+        return "ZIP 해제 완료"
+    if kind == "tar":
+        with tarfile.open(src_full) as tf:
+            _fb_no_traversal([m.name for m in tf.getmembers()], dest_full)
+            try:
+                tf.extractall(dest_full, filter="data")
+            except TypeError:
+                tf.extractall(dest_full)
+        return "TAR 해제 완료"
+    if kind == "single":
+        low = name.lower()
+        if low.endswith(".gz"):
+            opener, strip = gzip.open, 3
+        elif low.endswith(".bz2"):
+            opener, strip = bz2.open, 4
+        else:
+            opener, strip = lzma.open, 3
+        out_name = name[:-strip] or (name + ".out")
+        with opener(src_full, "rb") as fin, \
+                open(os.path.join(dest_full, out_name), "wb") as fout:
+            shutil.copyfileobj(fin, fout)
+        return f"단일파일 해제 완료 → {out_name}"
+    if kind == "7z":
+        try:
+            import py7zr
+            with py7zr.SevenZipFile(src_full, "r") as z:
+                z.extractall(path=dest_full)
+            return "7z 해제 완료 (py7zr)"
+        except ImportError:
+            pass
+        exe = shutil.which("7z") or shutil.which("7za") or shutil.which("7zr")
+        if exe:
+            subprocess.run([exe, "x", "-y", "-o" + dest_full, src_full],
+                           check=True, capture_output=True)
+            return "7z 해제 완료 (7z CLI)"
+        raise RuntimeError("7z 해제 도구가 없습니다 (pip install py7zr 또는 7z CLI 설치).")
+    if kind == "rar":
+        unrar = _fb_unrar_tool()
+        try:
+            import rarfile
+            if unrar:
+                rarfile.UNRAR_TOOL = unrar  # use the bundled binary
+            _fb_no_traversal(rarfile.RarFile(src_full).namelist(), dest_full)
+            with rarfile.RarFile(src_full) as rf:
+                rf.extractall(dest_full)
+            tag = "bundled unrar" if unrar and unrar.startswith(BASE_PATH) else "rarfile"
+            return f"rar 해제 완료 ({tag})"
+        except Exception:
+            pass
+        if unrar:
+            subprocess.run([unrar, "x", "-y", src_full, dest_full + os.sep],
+                           check=True, capture_output=True)
+            return "rar 해제 완료 (unrar)"
+        exe = shutil.which("7z") or shutil.which("7za")
+        if exe:
+            subprocess.run([exe, "x", "-y", "-o" + dest_full, src_full],
+                           check=True, capture_output=True)
+            return "rar 해제 완료 (7z CLI)"
+        raise RuntimeError("rar 해제 도구가 없습니다 (unrar 또는 7z CLI 설치).")
+    raise ValueError(f"지원하지 않는 압축 형식입니다: {name}")
+
+
+@app.route("/api/fs/move", methods=["POST"])
+def api_fs_move():
+    """Move or rename a file/folder within the data root."""
+    import shutil
+
+    src = _under_data_root(request.form.get("src"))
+    if src is None or not os.path.exists(src):
+        return jsonify({"error": "Source must be inside the data root."}), 400
+    dst_raw = (request.form.get("dst") or "").strip()
+    if not dst_raw:
+        return jsonify({"error": "Destination required."}), 400
+    root = os.path.realpath(_UPLOAD_ROOT)
+    dst = os.path.realpath(dst_raw)
+    if os.path.isdir(dst):  # moving into an existing folder
+        dst = os.path.realpath(os.path.join(dst, os.path.basename(src)))
+    if not dst.startswith(root + os.sep):
+        return jsonify({"error": "Destination outside data root."}), 400
+    if os.path.exists(dst):
+        return jsonify({"error": "Destination already exists."}), 400
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.move(src, dst)
+    return jsonify({"ok": True, "src": src, "dst": dst})
+
+
+@app.route("/api/fs/copy", methods=["POST"])
+def api_fs_copy():
+    """Copy a file/folder to another location within the data root."""
+    import shutil
+
+    src = _under_data_root(request.form.get("src"))
+    if src is None or not os.path.exists(src):
+        return jsonify({"error": "Source must be inside the data root."}), 400
+    dst_raw = (request.form.get("dst") or "").strip()
+    if not dst_raw:
+        return jsonify({"error": "Destination required."}), 400
+    root = os.path.realpath(_UPLOAD_ROOT)
+    dst = os.path.realpath(dst_raw)
+    if os.path.isdir(dst):  # copying into an existing folder
+        dst = os.path.realpath(os.path.join(dst, os.path.basename(src)))
+    if not dst.startswith(root + os.sep):
+        return jsonify({"error": "Destination outside data root."}), 400
+    if os.path.realpath(src) == dst:
+        return jsonify({"error": "Source and destination are the same."}), 400
+    if os.path.exists(dst):
+        return jsonify({"error": "Destination already exists."}), 400
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.isdir(src):
+        shutil.copytree(src, dst)
+    else:
+        shutil.copy2(src, dst)
+    return jsonify({"ok": True, "src": src, "dst": dst})
+
+
+def _fb_extract_dest(src):
+    """Compute the extraction destination dir for *src*, validated under root.
+
+    Returns (dest, error). Single-file archives unpack into the same folder;
+    container archives unpack into a '<stem>_extracted' sibling folder.
+    """
+    base = os.path.basename(src)
+    kind = _fb_archive_kind(base)
+    stem = base
+    for suf in (".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".txz",
+                ".tar", ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz"):
+        if stem.lower().endswith(suf):
+            stem = stem[: -len(suf)]
+            break
+    if kind == "single":
+        dest = os.path.dirname(src)
+    else:
+        dest = os.path.join(os.path.dirname(src), stem + "_extracted")
+    root = os.path.realpath(_UPLOAD_ROOT)
+    dest = os.path.realpath(dest)
+    if dest != root and not dest.startswith(root + os.sep):
+        return None, "Destination outside data root."
+    return dest, None
+
+
+@app.route("/api/fs/extract", methods=["POST"])
+def api_fs_extract():
+    """Extract an archive already on the server (zip/tar/gz/bz2/xz/7z/rar)."""
+    src = _under_data_root(request.form.get("path"))
+    if src is None or not os.path.isfile(src):
+        return jsonify({"error": "Archive must be inside the data root."}), 400
+    if _fb_archive_kind(os.path.basename(src)) is None:
+        return jsonify({"error": "Unsupported archive type."}), 400
+
+    dest, err = _fb_extract_dest(src)
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        msg = _fb_extract(src, dest)
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode("utf-8", "replace")[:300]
+        return jsonify({"error": f"해제 실패: {detail or e}"}), 500
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, "message": msg, "dest": dest})
+
+
+def _fb_sse(obj):
+    import json as _json
+    return f"data: {_json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+def _fb_sse_response(gen):
+    return Response(stream_with_context(gen),
+                    mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/api/fs/copy_stream", methods=["POST"])
+def api_fs_copy_stream():
+    """Copy one or more files/folders into a destination folder, streaming
+    byte-level progress as SSE. Used by the File Browser copy button."""
+    import shutil
+
+    root = os.path.realpath(_UPLOAD_ROOT)
+    raw_srcs = request.form.getlist("src")
+    dst_raw = (request.form.get("dst") or "").strip()
+    dst_dir = os.path.realpath(dst_raw) if dst_raw else None
+    srcs = []
+    for s in raw_srcs:
+        rs = _under_data_root(s)
+        if rs and os.path.exists(rs):
+            srcs.append(rs)
+
+    def gen():
+        if dst_dir is None or not (dst_dir == root or dst_dir.startswith(root + os.sep)) \
+                or not os.path.isdir(dst_dir):
+            yield _fb_sse({"type": "error", "error": "대상 폴더가 올바르지 않습니다."})
+            return
+        if not srcs:
+            yield _fb_sse({"type": "error", "error": "복사할 항목이 없습니다."})
+            return
+
+        # Build a flat copy plan (src_file -> dst_file) and total byte count,
+        # skipping any item whose top-level target already exists.
+        plan, total, skipped = [], 0, []
+        for s in srcs:
+            base = os.path.basename(s)
+            target_top = os.path.join(dst_dir, base)
+            if os.path.exists(target_top):
+                skipped.append(base)
+                continue
+            if os.path.realpath(s) == os.path.realpath(target_top):
+                skipped.append(base)
+                continue
+            if os.path.isdir(s):
+                for dp, _, fns in os.walk(s):
+                    for fn in fns:
+                        f = os.path.join(dp, fn)
+                        plan.append((f, os.path.join(target_top, os.path.relpath(f, s))))
+                        try:
+                            total += os.path.getsize(f)
+                        except OSError:
+                            pass
+                if not os.listdir(s):  # preserve empty dirs
+                    plan.append((None, target_top))
+            else:
+                plan.append((s, target_top))
+                total += os.path.getsize(s)
+
+        yield _fb_sse({"type": "status", "total": total, "files": len(plan),
+                       "message": f"복사 시작: {len(plan)}개 파일"
+                                  + (f", {len(skipped)}개 건너뜀" if skipped else "")})
+        done = 0
+        step = max(total // 200, 4 * 1024 * 1024)  # throttle: ~200 updates max
+        next_emit = step
+        BUF = 1024 * 1024
+        try:
+            for sf, df in plan:
+                if sf is None:  # empty directory
+                    os.makedirs(df, exist_ok=True)
+                    continue
+                os.makedirs(os.path.dirname(df), exist_ok=True)
+                with open(sf, "rb") as fi, open(df, "wb") as fo:
+                    while True:
+                        chunk = fi.read(BUF)
+                        if not chunk:
+                            break
+                        fo.write(chunk)
+                        done += len(chunk)
+                        if done >= next_emit:
+                            next_emit += step
+                            yield _fb_sse({"type": "progress", "done": done, "total": total,
+                                           "pct": round(done * 100 / total, 1) if total else 100,
+                                           "name": os.path.basename(sf)})
+                shutil.copystat(sf, df)
+            yield _fb_sse({"type": "done", "files": len(plan), "bytes": done,
+                           "skipped": skipped})
+        except Exception as e:  # noqa: BLE001
+            yield _fb_sse({"type": "error", "error": str(e)})
+
+    return _fb_sse_response(gen())
+
+
+def _fb_extract_one_events(src):
+    """Yield event dicts for extracting ONE archive. Progress dicts have
+    type='status'|'progress'; the final yield is a sentinel dict carrying
+    '_result' = 'ok' (with message/dest) or 'error' (with error)."""
+    import bz2
+    import gzip
+    import lzma
+    import tarfile
+    import zipfile
+
+    kind = _fb_archive_kind(os.path.basename(src))
+    if kind is None:
+        yield {"_result": "error", "error": "지원하지 않는 압축 형식입니다."}
+        return
+    dest, err = _fb_extract_dest(src)
+    if err:
+        yield {"_result": "error", "error": err}
+        return
+    os.makedirs(dest, exist_ok=True)
+    try:
+        if kind == "zip":
+            with zipfile.ZipFile(src) as zf:
+                members = [m for m in zf.infolist() if not m.is_dir()]
+                _fb_no_traversal([m.filename for m in members], dest)
+                total = len(members)
+                yield {"type": "status", "total": total, "message": f"ZIP 해제: {total}개 항목"}
+                for i, m in enumerate(members):
+                    zf.extract(m, dest)
+                    yield {"type": "progress", "done": i + 1, "total": total,
+                           "pct": round((i + 1) * 100 / total, 1) if total else 100,
+                           "name": os.path.basename(m.filename)}
+            yield {"_result": "ok", "message": "ZIP 해제 완료", "dest": dest}
+
+        elif kind == "tar":
+            with tarfile.open(src) as tf:
+                members = tf.getmembers()
+                _fb_no_traversal([m.name for m in members], dest)
+                files = [m for m in members if m.isfile() or m.isdir()]
+                total = len(files)
+                yield {"type": "status", "total": total, "message": f"TAR 해제: {total}개 항목"}
+                for i, m in enumerate(files):
+                    try:
+                        tf.extract(m, dest, filter="data")
+                    except TypeError:
+                        tf.extract(m, dest)
+                    yield {"type": "progress", "done": i + 1, "total": total,
+                           "pct": round((i + 1) * 100 / total, 1) if total else 100,
+                           "name": os.path.basename(m.name)}
+            yield {"_result": "ok", "message": "TAR 해제 완료", "dest": dest}
+
+        elif kind == "single":
+            name = os.path.basename(src)
+            low = name.lower()
+            if low.endswith(".gz"):
+                opener, strip = gzip.open, 3
+            elif low.endswith(".bz2"):
+                opener, strip = bz2.open, 4
+            else:
+                opener, strip = lzma.open, 3
+            out_name = name[:-strip] or (name + ".out")
+            total = os.path.getsize(src)
+            yield {"type": "status", "total": total, "message": f"단일파일 해제 → {out_name}"}
+            read = 0
+            step = max(total // 200, 4 * 1024 * 1024)
+            next_emit = step
+            with opener(src, "rb") as fin, \
+                    open(os.path.join(dest, out_name), "wb") as fout:
+                while True:
+                    chunk = fin.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    fout.write(chunk)
+                    read += len(chunk)
+                    if read >= next_emit:
+                        next_emit += step
+                        yield {"type": "progress", "done": read, "total": 0,
+                               "pct": None, "name": out_name}
+            yield {"_result": "ok", "message": f"단일파일 해제 완료 → {out_name}", "dest": dest}
+
+        else:  # 7z / rar — robust helper, indeterminate bar
+            yield {"type": "status", "total": 0, "pct": None,
+                   "message": f"{kind} 해제 중… (진행률 표시 미지원)"}
+            msg = _fb_extract(src, dest)
+            yield {"_result": "ok", "message": msg, "dest": dest}
+
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode("utf-8", "replace")[:300]
+        yield {"_result": "error", "error": f"해제 실패: {detail or e}"}
+    except Exception as e:  # noqa: BLE001
+        yield {"_result": "error", "error": str(e)}
+
+
+@app.route("/api/fs/extract_stream", methods=["POST"])
+def api_fs_extract_stream():
+    """Extract one OR MANY archives (one 'path' per archive), streaming progress
+    as SSE. Archives are processed sequentially; events carry the current file's
+    index/total so the client can show overall batch progress."""
+    raw = request.form.getlist("path")
+    srcs = [s for s in (_under_data_root(p) for p in raw)
+            if s and os.path.isfile(s)]
+
+    def gen():
+        if not srcs:
+            yield _fb_sse({"type": "error", "error": "압축 파일을 찾을 수 없습니다."})
+            return
+        total_files = len(srcs)
+        ok = fail = 0
+        results = []
+        yield _fb_sse({"type": "batch", "files": total_files})
+        for i, src in enumerate(srcs):
+            base = os.path.basename(src)
+            idx = i + 1
+            yield _fb_sse({"type": "file", "index": idx, "total": total_files, "name": base})
+            for ev in _fb_extract_one_events(src):
+                if "_result" in ev:
+                    if ev["_result"] == "ok":
+                        ok += 1
+                        results.append({"name": base, "ok": True,
+                                        "message": ev.get("message"), "dest": ev.get("dest")})
+                        yield _fb_sse({"type": "file_done", "index": idx, "total": total_files,
+                                       "name": base, "message": ev.get("message"),
+                                       "dest": ev.get("dest")})
+                    else:
+                        fail += 1
+                        results.append({"name": base, "ok": False, "error": ev.get("error")})
+                        yield _fb_sse({"type": "file_error", "index": idx, "total": total_files,
+                                       "name": base, "error": ev.get("error")})
+                else:
+                    ev2 = dict(ev)  # forward status/progress with file context
+                    ev2["index"] = idx
+                    ev2["totalFiles"] = total_files
+                    ev2["file"] = base
+                    yield _fb_sse(ev2)
+        yield _fb_sse({"type": "done", "ok": ok, "fail": fail, "results": results})
+
+    return _fb_sse_response(gen())
+
+
+@app.route("/api/fs/preview")
+def api_fs_preview():
+    """Preview a file: image bytes inline, or JSON text for small text files."""
+    src = _under_data_root(request.args.get("path"))
+    if src is None or not os.path.isfile(src):
+        return jsonify({"ok": False, "error": "File not found in data root."}), 400
+    ext = os.path.splitext(src)[1].lower()
+    if ext in _FB_IMAGE_EXT:
+        return send_file(src)
+    size = os.path.getsize(src)
+    if size > _FB_TEXT_MAX:
+        return jsonify({"ok": True, "type": "text",
+                        "text": f"(파일이 너무 큽니다: {size} bytes. 다운로드하세요.)"})
+    with open(src, "rb") as f:
+        raw = f.read(_FB_TEXT_MAX)
+    try:
+        return jsonify({"ok": True, "type": "text", "text": raw.decode("utf-8")})
+    except UnicodeDecodeError:
+        return jsonify({"ok": True, "type": "binary",
+                        "text": "(미리보기 불가: 바이너리 파일. 다운로드하세요.)"})
+
+
+@app.route("/api/fs/download")
+def api_fs_download():
+    """Download a single file from the data root."""
+    src = _under_data_root(request.args.get("path"))
+    if src is None or not os.path.isfile(src):
+        return jsonify({"error": "File not found in data root."}), 400
+    return send_file(src, as_attachment=True,
+                     download_name=os.path.basename(src))
 
 
 @app.route("/api/upload_dirs")

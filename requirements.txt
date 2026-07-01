@@ -18,6 +18,8 @@ PyQt5
 # requirements for web application
 Flask
 av  # PyAV fallback decoder for codecs OpenCV can't read (e.g. H.265/HEVC)
+py7zr  # 7z extraction in the File Browser tab (zip/tar/gz/bz2/xz are stdlib)
+rarfile  # rar extraction; needs an unrar binary (bundled at ./bin/unrar)
 
 # requirements for TensorRT usage
 onnx
