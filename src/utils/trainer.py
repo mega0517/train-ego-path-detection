@@ -43,7 +43,10 @@ def val_epoch(model, criterion, device, dataloader, use_amp=False, preprocess=No
     model.eval()
     total_loss = 0
     num_batches = len(dataloader)
-    with torch.inference_mode():
+    # no_grad (not inference_mode): inference_mode marks tensors as inference
+    # tensors, which breaks cuDNN RNN flatten_parameters() under DataParallel
+    # ("Inplace update to inference tensor ...") during validation.
+    with torch.no_grad():
         for batch in dataloader:
             if preprocess is not None:
                 data, target = preprocess(batch)
