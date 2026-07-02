@@ -36,9 +36,8 @@ backbones = [  # backbones to evaluate
     "resnet34",
     "resnet50",
 ]
-runtimes = [  # runtimes to evaluate
+runtimes = [  # runtimes to evaluate ("tensorrt" needs pre-exported .trt engines)
     "pytorch",
-    "tensorrt",
 ]
 metrics = [  # metrics to evaluate
     "iou",
@@ -46,11 +45,25 @@ metrics = [  # metrics to evaluate
 ]
 
 basepath = os.path.dirname(__file__)
-models_to_eval = [
-    f
-    for f in os.listdir(os.path.join(basepath, "weights"))
-    if os.path.isdir(os.path.join(basepath, "weights", f))
+# Evaluate both the single-frame base models (egopath/weights) and the temporal
+# RNN models (egopathrnn/weights). "weights" is kept for backward compatibility.
+weight_roots = [
+    os.path.join(basepath, "egopath", "weights"),
+    os.path.join(basepath, "egopathrnn", "weights"),
+    os.path.join(basepath, "weights"),
 ]
+models_to_eval = []  # (display_name, model_path, is_rnn)
+for root in weight_roots:
+    if not os.path.isdir(root):
+        continue
+    for name in sorted(os.listdir(root)):
+        model_path = os.path.join(root, name)
+        if not os.path.isdir(model_path) or not os.path.exists(
+            os.path.join(model_path, "config.yaml")
+        ):
+            continue
+        is_rnn = "egopathrnn" in root or name.endswith("RNN")
+        models_to_eval.append((name, model_path, is_rnn))
 
 if "iou" in metrics:
     with open(os.path.join("configs", "global.yaml")) as f:
@@ -68,33 +81,35 @@ if "iou" in metrics:
     )
 
 stats = []
-for model in models_to_eval:
-    with open(os.path.join("weights", model, "config.yaml")) as f:
+for model, model_path, is_rnn in models_to_eval:
+    with open(os.path.join(model_path, "config.yaml")) as f:
         model_config = yaml.safe_load(f)
     method = model_config["method"]
     backbone = model_config["backbone"]
     if backbone not in backbones or method not in methods:
         continue
+    mtype = "rnn" if is_rnn else "single"
     for runtime in runtimes:
-        if "latency" in metrics:
-            time.sleep(30)  # cooldown
-            latency_evaluator = LatencyEvaluator(
-                model_path=os.path.join("weights", model),
-                runtime=runtime,
-                device=device,
-            )
-            latency = latency_evaluator.evaluate()
-        if "iou" in metrics:
-            iou_evaluator = IoUEvaluator(
-                dataset=test_dataset,
-                model_path=os.path.join("weights", model),
-                runtime=runtime,
-                device=device,
-            )
-            iou = iou_evaluator.evaluate()
+        try:
+            latency = iou = None
+            if "latency" in metrics:
+                time.sleep(30)  # cooldown for stable timing
+                latency = LatencyEvaluator(
+                    model_path=model_path, runtime=runtime, device=device
+                ).evaluate()
+            if "iou" in metrics:
+                iou = IoUEvaluator(
+                    dataset=test_dataset, model_path=model_path, runtime=runtime, device=device
+                ).evaluate()
+        except Exception as e:  # noqa: BLE001 - skip a broken model/runtime, keep going
+            print(f"[skip] {model} ({mtype}, {runtime}): {type(e).__name__}: {e}")
+            continue
         precision = "amx" if runtime == "tensorrt" else "fp32"
+        print(f"[done] {model} ({mtype}, {runtime})"
+              + (f" latency={latency * 1000:.2f}ms" if latency is not None else "")
+              + (f" iou={iou:.5f}" if iou is not None else ""))
         stats.append(
-            f"{runtime},{backbone},{precision},{method},{model}"
+            f"{runtime},{backbone},{precision},{method},{mtype},{model}"
             + (f",{latency * 1000:.2f}" if "latency" in metrics else "")
             + (f",{iou:.5f}" if "iou" in metrics else "")
             + "\n"
@@ -103,7 +118,7 @@ stats.sort()
 
 os.makedirs("output", exist_ok=True)
 with open(os.path.join("output", "eval.csv"), "w") as f:
-    f.write("runtime,backbone,precision,method,model")
+    f.write("runtime,backbone,precision,method,type,model")
     f.write(",latency" if "latency" in metrics else "")
     f.write(",iou" if "iou" in metrics else "")
     f.write("\n")
