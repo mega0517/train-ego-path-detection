@@ -1,4 +1,4 @@
-annotations_path: /data3/bhkim/datasets/OSDaR23_unzip/13_station_ohlsdorf_13.1_extracted/rgb_center/egopath_labels.json
+annotations_path: /data3/bhkim/datasets/OSDaR23_unzip/9_station_ruebenkamp_9.7_extracted/rgb_center/egopath_labels.json
 backbone: resnet18
 base_model: brilliant-horse-15
 batch_size: 32
@@ -16,7 +16,7 @@ epochs: 50
 freeze_base: false
 gpu_preprocess: false
 hue: 0.2
-images_path: /data3/bhkim/datasets/OSDaR23_unzip/13_station_ohlsdorf_13.1_extracted/rgb_center
+images_path: /data3/bhkim/datasets/OSDaR23_unzip/9_station_ruebenkamp_9.7_extracted/rgb_center
 input_shape:
 - 3
 - 512
