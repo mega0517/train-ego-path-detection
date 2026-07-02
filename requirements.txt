@@ -25,6 +25,7 @@ xlrd  # legacy .xls preview
 olefile  # binary .hwp (HWP 5.0) text fallback
 pyhwp  # binary .hwp → full-layout HTML preview (hwp5html)
 six  # runtime dependency of pyhwp
+sam2  # SAM2 video auto-labeling (checkpoint fetched into ./bin/sam2, gitignored)
 
 # requirements for TensorRT usage
 onnx

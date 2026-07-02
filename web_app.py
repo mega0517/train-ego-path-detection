@@ -298,26 +298,38 @@ def prepare_detector(model_path, device, crop_mode, crop_coords):
 
 
 def run_both(img, det_single, det_rnn):
-    """Compute (single_frame_vis, rnn_vis) PIL images, mirroring the desktop GUI."""
+    """Compute (single_frame_vis, rnn_vis, timing) mirroring the desktop GUI.
+    timing = {"single_ms", "rnn_ms"} is the per-method detection wall-time (ms),
+    for comparing single-frame vs RNN inference speed."""
+    import time
     # Models expect 3-channel RGB; uploads may be RGBA (PNG w/ alpha), L, etc.
     if img.mode != "RGB":
         img = img.convert("RGB")
     single_vis = None
     rnn_vis = None
+    timing = {"single_ms": None, "rnn_ms": None}
     if det_single is not None:
         crop_s = det_single.get_crop_coords()
-        single_vis = draw_egopath(img, det_single.detect(img), crop_coords=crop_s)
+        t = time.perf_counter()
+        res_s = det_single.detect(img)
+        timing["single_ms"] = round((time.perf_counter() - t) * 1000, 1)
+        single_vis = draw_egopath(img, res_s, crop_coords=crop_s)
         if det_rnn is not None:
             crop_r = det_rnn.get_crop_coords()
-            rnn_vis = draw_egopath(img, det_rnn.detect(img), crop_coords=crop_r)
+            t = time.perf_counter()
+            res_r = det_rnn.detect(img)
+            timing["rnn_ms"] = round((time.perf_counter() - t) * 1000, 1)
+            rnn_vis = draw_egopath(img, res_r, crop_coords=crop_r)
     elif det_rnn is not None:
         # No standalone single-frame model: derive it from the RNN's base net.
         crop_r = det_rnn.get_crop_coords()
+        t = time.perf_counter()
         single_res, rnn_res = det_rnn.detect_pair(img)
+        timing["rnn_ms"] = round((time.perf_counter() - t) * 1000, 1)
         single_vis = draw_egopath(img, single_res, crop_coords=crop_r)
         if rnn_res is not None:
             rnn_vis = draw_egopath(img, rnn_res, crop_coords=crop_r)
-    return single_vis, rnn_vis
+    return single_vis, rnn_vis, timing
 
 
 def detectors_for_request(model_name, device, crop_mode, crop_coords):
@@ -495,7 +507,7 @@ def api_infer_image():
         det_single, det_rnn = detectors_for_request(
             model_name, device, crop_mode, crop_coords
         )
-        single_vis, rnn_vis = run_both(img, det_single, det_rnn)
+        single_vis, rnn_vis, timing = run_both(img, det_single, det_rnn)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:  # noqa: BLE001 - surface any inference failure to the UI
@@ -508,6 +520,8 @@ def api_infer_image():
             "rnn": pil_to_data_uri(rnn_vis),
             "has_rnn": det_rnn is not None,
             "single_is_fallback": det_single is None and det_rnn is not None,
+            "single_ms": timing["single_ms"],
+            "rnn_ms": timing["rnn_ms"],
         }
     )
 
@@ -621,7 +635,7 @@ def api_infer_video():
                             if det is not None and isinstance(det.crop_coords, tuple):
                                 det.crop_coords = tuple(round(c * scale) for c in det.crop_coords)
                         crop_scaled = True
-                    single_vis, rnn_vis = run_both(proc, det_single, det_rnn)
+                    single_vis, rnn_vis, timing = run_both(proc, det_single, det_rnn)
                     payload = {
                         "type": "frame",
                         "frame": frame_idx,
@@ -631,6 +645,8 @@ def api_infer_video():
                         "original": pil_to_data_uri(proc, quality=80),
                         "single": pil_to_data_uri(single_vis, quality=80),
                         "rnn": pil_to_data_uri(rnn_vis, quality=80),
+                        "single_ms": timing["single_ms"],
+                        "rnn_ms": timing["rnn_ms"],
                     }
                     yield sse(payload)
                     emitted += 1
@@ -1819,7 +1835,7 @@ def api_infer_folder():
                     for det in (det_single, det_rnn):  # treat each image independently
                         if det is not None:
                             det.reset_temporal()
-                    single_vis, rnn_vis = run_both(proc, det_single, det_rnn)
+                    single_vis, rnn_vis, timing = run_both(proc, det_single, det_rnn)
                     yield sse({
                         "type": "image", "index": i, "total": len(files), "name": name,
                         "elapsed": round(time.time() - t0, 1),
@@ -1828,6 +1844,8 @@ def api_infer_folder():
                         "rnn": pil_to_data_uri(rnn_vis, quality=80),
                         "has_rnn": det_rnn is not None,
                         "single_is_fallback": det_single is None and det_rnn is not None,
+                        "single_ms": timing["single_ms"],
+                        "rnn_ms": timing["rnn_ms"],
                     })
                     done += 1
                 except Exception as e:  # noqa: BLE001 - report and continue
@@ -2101,6 +2119,27 @@ def api_label_autolabel():
     )
 
 
+def _rdp_simplify(points, eps=10.0):
+    """Ramer-Douglas-Peucker polyline simplification: drop points closer than
+    `eps` px to the chord, so nearly-straight rails collapse to a few points
+    (endpoints always kept)."""
+    if len(points) < 3:
+        return points
+    (x1, y1), (x2, y2) = points[0], points[-1]
+    dx, dy = x2 - x1, y2 - y1
+    denom = (dx * dx + dy * dy) ** 0.5
+    dmax, idx = 0.0, 0
+    for i in range(1, len(points) - 1):
+        px, py = points[i]
+        d = (((px - x1) ** 2 + (py - y1) ** 2) ** 0.5 if denom == 0
+             else abs(dy * px - dx * py + x2 * y1 - y2 * x1) / denom)
+        if d > dmax:
+            dmax, idx = d, i
+    if dmax > eps:
+        return _rdp_simplify(points[:idx + 1], eps)[:-1] + _rdp_simplify(points[idx:], eps)
+    return [points[0], points[-1]]
+
+
 @app.route("/api/label/detect_model", methods=["POST"])
 def api_label_detect_model():
     """Auto-label every frame by running a trained model (default brilliant-horse-15)
@@ -2141,12 +2180,16 @@ def api_label_detect_model():
                 yy = int(round(y)); cols = np.where(arr[yy])[0]
                 if len(cols):
                     left.append([int(cols[0]), yy]); right.append([int(cols[-1]), yy])
-            return (left, right) if len(left) >= 2 else (None, None)
+            if len(left) < 2:
+                return None, None
+            return _rdp_simplify(left), _rdp_simplify(right)
         # regression / classification: detect() already returns [left, right]
         if isinstance(res, (list, tuple)) and len(res) == 2:
             L = [[int(x), int(y)] for x, y in res[0]]
             R = [[int(x), int(y)] for x, y in res[1]]
-            return (L, R) if len(L) >= 2 and len(R) >= 2 else (None, None)
+            if len(L) < 2 or len(R) < 2:
+                return None, None
+            return _rdp_simplify(L), _rdp_simplify(R)
         return None, None
 
     data = _load_annotations(annots)
@@ -2186,6 +2229,129 @@ def api_label_detect_model():
             yield sse({"type": "done", "count": done, "total": len(files), "labeled_total": len(data)})
         except Exception as e:  # noqa: BLE001
             yield sse({"type": "error", "error": str(e)})
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# --------------------------------------------------------------------------- #
+# SAM2 video auto-labeling (prompt the ego-track once, propagate across frames)
+# --------------------------------------------------------------------------- #
+_SAM2 = {}
+_SAM2_CFG = "configs/sam2.1/sam2.1_hiera_b+.yaml"
+_SAM2_CKPT = os.path.join(BASE_PATH, "bin", "sam2", "sam2.1_hiera_base_plus.pt")
+
+
+def _sam2_predictor():
+    """Lazily build and cache the SAM2 video predictor (heavy; load once)."""
+    if _SAM2.get("pred") is None:
+        from sam2.build_sam import build_sam2_video_predictor
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        _SAM2["pred"] = build_sam2_video_predictor(_SAM2_CFG, _SAM2_CKPT, device=dev)
+        _SAM2["dev"] = dev
+    return _SAM2["pred"], _SAM2["dev"]
+
+
+def _sam2_rails_from_mask(mask, n=48):
+    """left/right boundary of the track mask on an n-row grid, RDP-simplified, with
+    the lowest point extended to the frame bottom (training needs full-height rails)."""
+    import numpy as np
+    rows = np.where(mask.any(axis=1))[0]
+    if len(rows) < 2:
+        return None, None
+    H = mask.shape[0]
+    grid = np.linspace(rows.min(), rows.max(), n)
+    left, right = [], []
+    for y in grid:
+        yy = int(round(y)); cols = np.where(mask[yy])[0]
+        if len(cols):
+            left.append([int(cols[0]), yy]); right.append([int(cols[-1]), yy])
+    if len(left) < 2:
+        return None, None
+    for rail in (left, right):
+        if rail[-1][1] < H - 1:
+            rail.append([rail[-1][0], H - 1])  # extend down to the last row
+    return _rdp_simplify(left), _rdp_simplify(right)
+
+
+@app.route("/api/label/sam2", methods=["POST"])
+def api_label_sam2():
+    """Segment the ego-track on the first frame and propagate it across the whole
+    folder (a video's frames) with SAM2, then write left/right rails. SSE-streamed."""
+    folder = (request.form.get("folder") or "").strip()
+    annots = (request.form.get("annots") or "").strip()
+    points_str = (request.form.get("points") or "").strip()
+
+    files = list_folder_images(folder)
+    if files is None:
+        return jsonify({"error": f"Not a folder: {folder}"}), 400
+    if not files:
+        return jsonify({"error": "No images in folder."}), 400
+    if not annots.lower().endswith(".json") or not _annots_path_ok(annots):
+        return jsonify({"error": "Invalid annotations path."}), 400
+    if not os.path.exists(_SAM2_CKPT):
+        return jsonify({"error": "SAM2 checkpoint missing (run setup)."}), 400
+
+    def event_stream():
+        import json
+        import shutil
+        import tempfile
+        import numpy as np
+        from PIL import Image
+
+        def sse(obj):
+            return f"data: {json.dumps(obj)}\n\n"
+
+        tmp = None
+        try:
+            yield sse({"type": "status", "message": "SAM2 모델 로딩…"})
+            pred, dev = _sam2_predictor()
+            W, H = Image.open(os.path.join(folder, files[0])).size
+
+            tmp = tempfile.mkdtemp(prefix="sam2f_")  # SAM2 needs int-named jpg frames
+            for i, name in enumerate(files):
+                os.symlink(os.path.abspath(os.path.join(folder, name)),
+                           os.path.join(tmp, f"{i:06d}.jpg"))
+
+            if points_str:
+                pts = [[float(a) for a in p.split(",")] for p in points_str.split(";")]
+            else:  # auto: vertical line of positive points up the bottom-centre
+                pts = [[W / 2, H * f] for f in (0.98, 0.9, 0.82, 0.74, 0.66)]
+            points = np.array(pts, dtype=np.float32)
+            labels = np.ones(len(points), dtype=np.int32)
+
+            yield sse({"type": "status",
+                       "message": f"프레임 로딩·전파 중… ({len(files)}프레임)"})
+            data = _load_annotations(annots)
+            done = 0
+            with torch.inference_mode(), torch.autocast(dev, dtype=torch.bfloat16):
+                state = pred.init_state(video_path=tmp)
+                pred.add_new_points_or_box(inference_state=state, frame_idx=0,
+                                           obj_id=1, points=points, labels=labels)
+                for fidx, _obj_ids, logits in pred.propagate_in_video(state):
+                    m = (logits[0] > 0.0).cpu().numpy()
+                    m = m[0] if m.ndim == 3 else m
+                    L, R = _sam2_rails_from_mask(m)
+                    if L and R:
+                        data[files[fidx]] = {"left_rail": L, "right_rail": R}
+                        done += 1
+                    if fidx % 3 == 0:
+                        yield sse({"type": "progress", "index": fidx + 1,
+                                   "total": len(files), "name": files[fidx]})
+            tmpj = annots + ".tmp"
+            with open(tmpj, "w") as f:
+                json.dump(data, f)
+            os.replace(tmpj, annots)
+            yield sse({"type": "done", "count": done, "total": len(files),
+                       "labeled_total": len(data)})
+        except Exception as e:  # noqa: BLE001
+            yield sse({"type": "error", "error": str(e)})
+        finally:
+            if tmp:
+                shutil.rmtree(tmp, ignore_errors=True)
 
     return Response(
         stream_with_context(event_stream()),

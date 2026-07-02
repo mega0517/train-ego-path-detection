@@ -490,6 +490,11 @@
           <div class="frame" id="rnnFrame">Result preview</div>
         </div>
       </div>
+      <div class="metric-row" id="perfRow" style="display:none; flex-shrink:0;">
+        <div class="metric"><div class="lbl">단일 프레임</div><div class="val" id="perfSingle" style="font-size:16px;">—</div></div>
+        <div class="metric"><div class="lbl">RNN (Temporal)</div><div class="val" id="perfRnn" style="font-size:16px;">—</div></div>
+        <div class="metric"><div class="lbl">속도 비교</div><div class="val" id="perfRatio" style="font-size:16px;">—</div></div>
+      </div>
       <div class="results-strip" id="resultsStrip">
         <button class="strip-nav" id="stripPrev" title="이전 (←)" disabled>‹</button>
         <div class="strip-track" id="resultsTrack"></div>
@@ -619,6 +624,18 @@
         </div>
         <button class="btn" id="lblDetectBtn" style="margin-top:8px;background:#8e24aa;">모델로 자동 라벨 →</button>
       </div>
+      <div class="card span2">
+        <h2>SAM2 자동 라벨 (비디오 전파)</h2>
+        <div class="info">SAM2로 첫 프레임의 궤도를 세그멘테이션해 폴더의 모든 프레임에 전파합니다(연속 비디오 프레임에 적합, 도메인 무관). 프롬프트는 마우스로 궤도 위를 클릭해 지정하거나, 비우면 하단 중앙을 자동 시드합니다. 생성 후 어긋난 프레임만 보정하세요.</div>
+        <div class="rail-btns" style="margin-top:6px;">
+          <button class="btn" id="lblSam2PickBtn" style="flex:1;background:#00838f;">🖱 클릭으로 프롬프트</button>
+          <button class="btn" id="lblSam2ClearBtn" style="flex:1;background:#9e9e9e;">프롬프트 지우기</button>
+        </div>
+        <div class="info" id="lblSam2Info">프롬프트 없음 → 자동(하단 중앙)</div>
+        <label style="margin-top:6px;">또는 좌표 직접 입력 ("x,y;x,y")</label>
+        <input type="text" id="lblSam2Points" placeholder="비우면 자동/클릭값 사용" />
+        <button class="btn" id="lblSam2Btn" style="margin-top:6px;background:#00838f;">SAM2로 자동 라벨 →</button>
+      </div>
       <div class="progress-wrap span2" id="lblProgWrap"><div class="progress-bar" id="lblProgBar"></div></div>
       <div class="status-line span2" id="lblStatus">폴더와 주석 JSON을 설정하면 이미지를 불러옵니다.</div>
 
@@ -729,6 +746,7 @@
       setFrame($("origFrame"), null, "Input preview");
       setFrame($("singleFrame"), null, "Result preview");
       setFrame($("rnnFrame"), null, "Result preview");
+      perfReset();
     }
 
     $("fileInput").onchange = () => {
@@ -863,6 +881,24 @@
       setFrame($("rnnFrame"), data.rnn, data.has_rnn ? "Result preview" : "No RNN model");
     }
 
+    // ----- Single-frame vs RNN performance metrics (inference latency / FPS) -----
+    let perf = { sN: 0, sSum: 0, rN: 0, rSum: 0 };
+    function perfReset() { perf = { sN: 0, sSum: 0, rN: 0, rSum: 0 }; $("perfRow").style.display = "none"; }
+    function perfFmt(ms) { return ms == null ? "—" : `${ms.toFixed(1)} ms · ${ms > 0 ? (1000 / ms).toFixed(1) : "—"} fps`; }
+    function perfAdd(sMs, rMs) {
+      if (sMs != null) { perf.sN++; perf.sSum += sMs; }
+      if (rMs != null) { perf.rN++; perf.rSum += rMs; }
+      const s = perf.sN ? perf.sSum / perf.sN : null;
+      const r = perf.rN ? perf.rSum / perf.rN : null;
+      const n = Math.max(perf.sN, perf.rN);
+      $("perfRow").style.display = "flex";
+      $("perfSingle").textContent = perfFmt(s);
+      $("perfRnn").textContent = perfFmt(r);
+      $("perfRatio").textContent = (s && r)
+        ? (r >= s ? `RNN이 ${(r / s).toFixed(2)}× 느림` : `RNN이 ${(s / r).toFixed(2)}× 빠름`) + (n > 1 ? ` · 평균 ${n}장` : "")
+        : "—";
+    }
+
     function setBusy(busy) {
       $("runBtn").disabled = busy;
       $("stopBtn").disabled = !busy;
@@ -878,6 +914,7 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Inference failed");
         showImageResult(data);
+        perfReset(); perfAdd(data.single_ms, data.rnn_ms);
         $("statusLine").textContent = "Inference complete!";
       } catch (e) {
         $("statusLine").textContent = "Error: " + e.message;
@@ -962,6 +999,7 @@
       setBusy(true);
       batchAbort = false;
       clearResults();
+      perfReset();
       $("resultsStrip").classList.add("show");
       const total = batchFiles.length;
       let okCount = 0;
@@ -975,6 +1013,7 @@
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || "failed");
           addThumb(f.name, data, true);
+          perfAdd(data.single_ms, data.rnn_ms);
           okCount++;
         } catch (e) {
           addThumb(f.name, { error: e.message }, false);
@@ -992,6 +1031,7 @@
       setBusy(true);
       batchAbort = false;
       clearResults();
+      perfReset();
       $("resultsStrip").classList.add("show");
       $("statusLine").textContent = "Starting server folder…";
       videoController = new AbortController();
@@ -1023,6 +1063,7 @@
               $("statusLine").textContent = m.message;
             } else if (m.type === "image") {
               addThumb(m.name, m, true);
+              perfAdd(m.single_ms, m.rnn_ms);
               $("progressBar").style.width = Math.round(((m.index + 1) / m.total) * 100) + "%";
               $("statusLine").textContent = `Processing ${m.index + 1}/${m.total}: ${m.name} · ${m.elapsed}s`;
             } else if (m.type === "image_error") {
@@ -1051,6 +1092,7 @@
     // incrementally from xhr.responseText.
     async function runVideo() {
       setBusy(true);
+      perfReset();
       const f = $("fileInput").files[0];
       const key = fileKey(f);
       const sizeMb = f ? (f.size / (1024 * 1024)).toFixed(1) : "?";
@@ -1094,6 +1136,7 @@
           setFrame($("origFrame"), msg.original, "Input preview");
           setFrame($("singleFrame"), msg.single, "Result preview");
           setFrame($("rnnFrame"), msg.rnn, "Result preview");
+          perfAdd(msg.single_ms, msg.rnn_ms);
           const pct = msg.total ? Math.round(((msg.frame + 1) / msg.total) * 100) : null;
           $("progressBar").style.width = (pct === null ? 0 : pct) + "%";
           const fps = msg.elapsed > 0 ? (msg.emitted / msg.elapsed) : 0;
@@ -1871,7 +1914,8 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
 
     // ----- Labeling -----
     const lbl = { images: [], idx: -1, left: [], right: [], rail: "left",
-                  origW: 1, origH: 1, dispW: 1, dispH: 1, img: new Image(), lineWidth: 5 };
+                  origW: 1, origH: 1, dispW: 1, dispH: 1, img: new Image(), lineWidth: 5,
+                  sam2Mode: false, sam2Points: [] };
     const lblCanvas = $("lblCanvas"), lblCtx = lblCanvas.getContext("2d");
 
     $("lblBrowseBtn").onclick = () => {
@@ -1945,13 +1989,16 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
 
     function renderImgList() {
       const el = $("lblList"); el.innerHTML = "";
+      let activeEl = null;
       lbl.images.forEach((im, i) => {
         const it = document.createElement("div");
         it.className = "img-item" + (i === lbl.idx ? " active" : "");
         it.innerHTML = `<span>${im.name}</span><span class="mk">${im.labeled ? "✓" : ""}</span>`;
         it.onclick = () => loadLabelImage(i);
         el.appendChild(it);
+        if (i === lbl.idx) activeEl = it;
       });
+      if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
     }
 
     async function loadLabelImage(i) {
@@ -2012,6 +2059,13 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       if (lbl.img.complete) lblCtx.drawImage(lbl.img, 0, 0, lbl.dispW, lbl.dispH);
       drawRail(lbl.left, "#e53935");
       drawRail(lbl.right, "#1e88e5");
+      // SAM2 prompt points (cyan dots)
+      lbl.sam2Points.forEach((p) => {
+        const [x, y] = o2d(p);
+        lblCtx.beginPath(); lblCtx.arc(x, y, 6, 0, 2 * Math.PI);
+        lblCtx.fillStyle = "#00e5ff"; lblCtx.fill();
+        lblCtx.lineWidth = 2; lblCtx.strokeStyle = "#004d5a"; lblCtx.stroke();
+      });
     }
     // Mouse → display-pixel coords on the canvas.
     function evToDisp(e) {
@@ -2037,10 +2091,16 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
     lblCanvas.onmousedown = (e) => {
       if (lbl.idx < 0) return;
       const [dx, dy] = evToDisp(e);
+      const ox = Math.round(dx * lbl.origW / lbl.dispW), oy = Math.round(dy * lbl.origH / lbl.dispH);
+      if (lbl.sam2Mode) {  // collect SAM2 prompt points instead of drawing rails
+        lbl.sam2Points.push([ox, oy]);
+        $("lblSam2Info").textContent = `프롬프트 점 ${lbl.sam2Points.length}개 (궤도 위를 클릭 · 우클릭=마지막 삭제)`;
+        redrawLabel();
+        return;
+      }
       const hit = hitPoint(dx, dy);
       if (hit) { lblDrag = hit; return; }            // grab existing node to move it
       // Empty space → add a new point to the current rail.
-      const ox = Math.round(dx * lbl.origW / lbl.dispW), oy = Math.round(dy * lbl.origH / lbl.dispH);
       (lbl.rail === "left" ? lbl.left : lbl.right).push([ox, oy]);
       redrawLabel();
     };
@@ -2070,6 +2130,12 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
     lblCanvas.oncontextmenu = (e) => {
       e.preventDefault();
       if (lbl.idx < 0) return;
+      if (lbl.sam2Mode) {  // remove the last SAM2 prompt point
+        lbl.sam2Points.pop();
+        $("lblSam2Info").textContent = `프롬프트 점 ${lbl.sam2Points.length}개 (궤도 위를 클릭 · 우클릭=마지막 삭제)`;
+        redrawLabel();
+        return;
+      }
       const [dx, dy] = evToDisp(e);
       const hit = hitPoint(dx, dy);
       if (hit) {
@@ -2137,6 +2203,14 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
     $("lblSaveBtn").onclick = async () => { if (await saveLabel()) { $("lblStatus").textContent = "Saved ✓"; loadLabelImage(lbl.idx + 1); } };
     $("lblPrevBtn").onclick = () => loadLabelImage(lbl.idx - 1);
     $("lblNextBtn").onclick = () => loadLabelImage(lbl.idx + 1);
+    // Up/Down arrows move through the image list (prev/next), on the Labeling tab.
+    document.addEventListener("keydown", (e) => {
+      if ($("pageLabel").style.display === "none") return;
+      const tag = (e.target.tagName || "").toUpperCase();
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      if (e.key === "ArrowUp") { e.preventDefault(); loadLabelImage(lbl.idx - 1); }
+      else if (e.key === "ArrowDown") { e.preventDefault(); loadLabelImage(lbl.idx + 1); }
+    });
 
     // Auto-label every frame by detecting rails with a trained model.
     $("lblDetectBtn").onclick = async () => {
@@ -2192,6 +2266,76 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         }
       } catch (e) { $("lblStatus").textContent = "Error: " + e.message; }
       finally { $("lblDetectBtn").disabled = false; }
+    };
+
+    // SAM2: segment the ego-track on frame 0 and propagate across the folder.
+    $("lblSam2Btn").onclick = async () => {
+      const folder = $("lblFolder").value.trim();
+      const annots = $("lblAnnots").value.trim();
+      if (!folder || !annots) { $("lblStatus").textContent = "폴더와 주석 JSON 경로를 먼저 설정하세요."; return; }
+      $("lblSam2Btn").disabled = true;
+      $("lblStatus").textContent = "SAM2 준비 중…";
+      // Prefer mouse-clicked prompt points; else the text field; else auto (empty).
+      const clicked = lbl.sam2Points.map((p) => `${p[0]},${p[1]}`).join(";");
+      const points = clicked || $("lblSam2Points").value.trim();
+      const fd = new FormData();
+      fd.append("folder", folder);
+      fd.append("annots", annots);
+      fd.append("points", points);
+      try {
+        const res = await fetch("/api/label/sam2", { method: "POST", body: fd });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }
+        const reader = res.body.getReader(); const dec = new TextDecoder();
+        let buf = "", li = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf("\n\n", li)) >= 0) {
+            const chunk = buf.slice(li, idx).trim(); li = idx + 2;
+            if (!chunk.startsWith("data:")) continue;
+            let m; try { m = JSON.parse(chunk.slice(5).trim()); } catch (_) { continue; }
+            if (m.type === "status") { $("lblStatus").textContent = m.message; }
+            else if (m.type === "progress") {
+              $("lblProgBar").style.width = Math.round((m.index / m.total) * 100) + "%";
+              $("lblStatus").textContent = `SAM2 전파 ${m.index}/${m.total}: ${m.name}`;
+            } else if (m.type === "done") {
+              const r = await (await fetch(`/api/label/list?folder=${encodeURIComponent(folder)}&annots=${encodeURIComponent(annots)}`)).json().catch(() => null);
+              if (r && r.ok && r.images) {
+                const labeledSet = new Set(r.images.filter((x) => x.labeled).map((x) => x.name));
+                lbl.images.forEach((im) => { im.labeled = labeledSet.has(im.name); });
+              }
+              renderImgList();
+              $("lblCount").textContent = `(${lbl.images.length}, labeled ${m.labeled_total})`;
+              $("lblStatus").textContent = `SAM2 완료: ${m.count}/${m.total} 프레임 ✓ — 어긋난 프레임만 보정하세요.`;
+              $("lblProgBar").style.width = "0%";
+              if (lbl.idx >= 0) loadLabelImage(lbl.idx);
+            } else if (m.type === "error") { $("lblStatus").textContent = "SAM2 오류: " + m.error; }
+          }
+          buf = buf.slice(li); li = 0;
+        }
+      } catch (e) { $("lblStatus").textContent = "Error: " + e.message; }
+      finally { $("lblSam2Btn").disabled = false; }
+    };
+    // Toggle SAM2 prompt-picking: clicks on the canvas collect prompt points
+    // (prompt is applied to the first frame, so jump there).
+    $("lblSam2PickBtn").onclick = () => {
+      lbl.sam2Mode = !lbl.sam2Mode;
+      $("lblSam2PickBtn").classList.toggle("run", lbl.sam2Mode);
+      $("lblSam2PickBtn").textContent = lbl.sam2Mode ? "✓ 프롬프트 지정 중 (클릭)" : "🖱 클릭으로 프롬프트";
+      if (lbl.sam2Mode) {
+        if (lbl.images.length && lbl.idx !== 0) loadLabelImage(0);  // prompt is on frame 0
+        $("lblStatus").textContent = "궤도 위를 클릭해 SAM2 프롬프트 점을 찍으세요(첫 프레임).";
+      }
+      $("lblSam2Info").textContent = lbl.sam2Points.length
+        ? `프롬프트 점 ${lbl.sam2Points.length}개 (궤도 위를 클릭 · 우클릭=마지막 삭제)`
+        : "프롬프트 없음 → 자동(하단 중앙)";
+    };
+    $("lblSam2ClearBtn").onclick = () => {
+      lbl.sam2Points = [];
+      $("lblSam2Info").textContent = "프롬프트 없음 → 자동(하단 중앙)";
+      redrawLabel();
     };
 
     // ----- Training -----
