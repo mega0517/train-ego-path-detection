@@ -1627,6 +1627,33 @@ def api_fs_download():
                      download_name=os.path.basename(src))
 
 
+@app.route("/api/fs/stash", methods=["POST"])
+def api_fs_stash():
+    """Save an uploaded (client-local) file into a temp cache under the data root
+    so the existing path-based preview endpoints can render it (parity with server
+    files). The original extension is preserved for type dispatch; stale stashes
+    (older than 1h) are pruned."""
+    import time
+
+    up = request.files.get("file")
+    if up is None or not up.filename:
+        return jsonify({"ok": False, "error": "No file."}), 400
+    cache = os.path.join(os.path.realpath(_UPLOAD_ROOT), ".preview_cache")
+    os.makedirs(cache, exist_ok=True)
+    now = time.time()
+    for n in os.listdir(cache):  # best-effort prune
+        fp = os.path.join(cache, n)
+        try:
+            if os.path.isfile(fp) and now - os.path.getmtime(fp) > 3600:
+                os.unlink(fp)
+        except OSError:
+            pass
+    ext = os.path.splitext(os.path.basename(up.filename))[1]
+    dest = os.path.join(cache, f"stash_{int(now * 1000)}{ext}")
+    up.save(dest)
+    return jsonify({"ok": True, "path": dest})
+
+
 @app.route("/api/fs/hwp_html")
 def api_fs_hwp_html():
     """Render a binary .hwp as full-layout HTML (hwp5html) for the preview iframe.

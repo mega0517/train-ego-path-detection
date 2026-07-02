@@ -88,6 +88,11 @@
     .fb2-pane.active .fb2-pathbar { background: #eaf6eb; }
     .fb2-pathbar .pth { flex: 1; font-size: 12px; word-break: break-all; color: var(--muted); }
     .fb2-pathbar .btn { width: auto; margin-top: 0; padding: 3px 8px; background: #607d8b; }
+    .fb-toggle { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+    .fb-toggle button { border: none; background: var(--panel); color: var(--muted); cursor: pointer;
+      font-size: 12px; padding: 3px 8px; line-height: 1.4; }
+    .fb-toggle button + button { border-left: 1px solid var(--border); }
+    .fb-toggle button.on { background: var(--accent); color: #fff; font-weight: 600; }
     .fb2-list { flex: 1; min-height: 0; overflow-y: auto; }
     .fb2-list .img-item { gap: 6px; }
     .fb2-hint { font-size: 12px; color: var(--muted); padding: 8px; }
@@ -330,7 +335,6 @@
       <span>🚆 TEP-Net</span>
     </span>
     <span class="tabs">
-      <button class="tab" id="tabUpload">업로드 Upload</button>
       <button class="tab active" id="tabLabel">라벨링 Labeling</button>
       <button class="tab" id="tabTrain">학습 RNN Transfer</button>
       <button class="tab" id="tabInfer">추론 Inference</button>
@@ -339,60 +343,25 @@
     <span class="status" id="deviceStatus">…</span>
   </header>
 
-  <div class="layout" id="pageUpload" style="display:none; flex-direction:column;">
-    <div class="fb2-actions">
-      <button class="btn" id="upUploadBtn" style="background:#1565c0;" disabled>업로드 → 서버</button>
-      <button class="btn" id="upDownloadBtn" style="background:#00897b;" disabled>← 다운로드</button>
-      <button class="btn" id="upExtractBtn" style="background:#5e35b1;" disabled>🗜️ 압축파일 풀기</button>
-      <button class="btn" id="upDelBtn" style="background:var(--danger);" disabled>🗑 삭제</button>
-      <button class="btn" id="upMkdirBtn" style="background:#455a64;">+ 새 폴더</button>
-      <button class="btn" id="upOpenLocalBtn" style="background:#607d8b;">📂 로컬 폴더 열기</button>
-      <input type="file" id="upLocalInput" webkitdirectory directory multiple style="display:none;" />
-      <span class="sep"></span>
-      <span class="info" id="upStatus" style="margin:0;">왼쪽=내 컴퓨터(로컬), 오른쪽=서버. 로컬 폴더를 열고 파일을 선택해 ‘업로드 → 서버’ 하세요.</span>
-    </div>
-    <div class="progress-wrap" id="upProgWrap" style="margin-top:0; margin-bottom:8px; display:none;"><div class="progress-bar" id="upProgBar"></div></div>
-    <div class="fb2-panes">
-      <div class="fb2-pane active" id="upPaneL" data-side="L">
-        <div class="fb2-pathbar">
-          <input type="checkbox" id="upAllL" title="전체 선택 / 해제" style="margin:0 4px;cursor:pointer;width:15px;height:15px;" />
-          <button class="btn" id="upUpL" disabled>⬆</button>
-          <button class="btn" id="upRefreshL">🔄</button>
-          <span class="pth" id="upPathL">🖥 로컬: 폴더를 열어주세요</span>
-        </div>
-        <div class="fb2-list" id="upListL"><div class="fb2-hint">📂 ‘로컬 폴더 열기’를 눌러 시작하세요.</div></div>
-        <div class="cnt" id="upCntL"></div>
-      </div>
-      <div class="fb2-pane" id="upPaneR" data-side="R">
-        <div class="fb2-pathbar">
-          <input type="checkbox" id="upAllR" title="전체 선택 / 해제" style="margin:0 4px;cursor:pointer;width:15px;height:15px;" />
-          <button class="btn" id="upUpR">⬆</button>
-          <button class="btn" id="upRefreshR">🔄</button>
-          <span class="pth" id="upPathR">🗄 —</span>
-        </div>
-        <div class="fb2-list" id="upListR">Loading…</div>
-        <div class="cnt" id="upCntR"></div>
-      </div>
-    </div>
-  </div>
-
   <div class="layout" id="pageFiles" style="display:none; flex-direction:column;">
     <div class="fb2-actions">
-      <button class="btn" id="fbCopyBtn" style="background:#1565c0;" disabled>복사 →</button>
-      <button class="btn" id="fbMoveBtn" style="background:#00897b;" disabled>이동 →</button>
+      <button class="btn" id="fbSendBtn" style="background:#1565c0;" disabled>보내기</button>
+      <button class="btn" id="fbRecvBtn" style="background:#00897b;" disabled>받기</button>
       <button class="btn" id="fbExtractSelBtn" style="background:#5e35b1;" disabled>🗜️ 압축파일 풀기</button>
       <button class="btn" id="fbDelSelBtn" style="background:var(--danger);" disabled>🗑 삭제</button>
       <button class="btn" id="fbMkdirBtn" style="background:#455a64;">+ 새 폴더</button>
-      <button class="btn" id="fbUploadBtn" style="background:#5e35b1;">⬆ 업로드</button>
-      <input type="file" id="fbFiles" multiple style="display:none;" />
+      <button class="btn" id="fbOpenLocalBtn" style="background:#607d8b;">📂 로컬 열기</button>
+      <input type="file" id="fbLocalInput" webkitdirectory directory multiple style="display:none;" />
       <span class="sep"></span>
-      <span class="info" id="fbStatus" style="margin:0;">활성 패널 ▸ 다른 패널로 복사/이동합니다. 패널을 클릭해 활성화하세요.</span>
+      <span class="info" id="fbStatus" style="margin:0;">각 패널을 로컬/서버로 선택하세요. 활성 패널 ▸ 다른 패널로 복사·업로드·다운로드합니다.</span>
     </div>
     <div class="progress-wrap" id="fbProgWrap" style="margin-top:0; margin-bottom:8px;"><div class="progress-bar" id="fbProgBar"></div></div>
     <div class="fb2-panes">
       <div class="fb2-pane" id="fbPaneL" data-side="L">
         <div class="fb2-pathbar">
           <input type="checkbox" id="fbAllL" title="전체 선택 / 해제" style="margin:0 4px;cursor:pointer;width:15px;height:15px;" />
+          <span class="fb-toggle" id="fbTypeL"><button type="button" data-v="local">로컬</button><button type="button" data-v="server">서버</button></span>
+          <button class="btn" id="fbOpenL" style="display:none;" title="로컬 폴더 열기">📂</button>
           <button class="btn" id="fbUpL">⬆</button>
           <button class="btn" id="fbRefreshL">🔄</button>
           <span class="pth" id="fbPathL">—</span>
@@ -403,6 +372,8 @@
       <div class="fb2-pane" id="fbPaneR" data-side="R">
         <div class="fb2-pathbar">
           <input type="checkbox" id="fbAllR" title="전체 선택 / 해제" style="margin:0 4px;cursor:pointer;width:15px;height:15px;" />
+          <span class="fb-toggle" id="fbTypeR"><button type="button" data-v="local">로컬</button><button type="button" data-v="server">서버</button></span>
+          <button class="btn" id="fbOpenR" style="display:none;" title="로컬 폴더 열기">📂</button>
           <button class="btn" id="fbUpR">⬆</button>
           <button class="btn" id="fbRefreshR">🔄</button>
           <span class="pth" id="fbPathR">—</span>
@@ -634,11 +605,6 @@
         <button class="btn" id="lblNextBtn" style="flex:1;background:#607d8b;">다음 →</button>
       </div>
       <div class="card span2">
-        <h2>보간 (키프레임) — 권장</h2>
-        <div class="info">시퀀스에서 몇 프레임만 라벨링(예: 처음·중간·끝)한 뒤, 사이 프레임을 보간으로 채웁니다. 드리프트 없이 안정적이며, 레일이 휘는 구간엔 키프레임을 더 추가하세요.</div>
-        <button class="btn" id="lblInterpBtn" style="margin-top:6px;background:#2e7d32;">라벨된 프레임 사이 보간</button>
-      </div>
-      <div class="card span2">
         <h2>자동 라벨 (학습된 모델로 레일 검출)</h2>
         <div class="info">학습된 모델로 모든 프레임의 레일을 직접 검출해 라벨을 생성합니다. 시드·추적이 없어 드리프트가 없으며, 도메인이 맞는 모델일수록 정확합니다. regression 모델은 좌·우 레일을 직접 예측해 라벨용으로 가장 깔끔합니다. 생성 후 어긋난 프레임만 수동 보정하세요.</div>
         <div class="grid2" style="margin-top:6px;">
@@ -737,16 +703,17 @@
       const lm = $("lblDetectModel");
       if (lm) {
         lm.innerHTML = "";
-        let preferred = false;
         data.models.forEach((m) => {
           const info = m.base_info || m.rnn_info || {};
           const o = document.createElement("option");
           o.value = m.name;
           o.textContent = `${m.name} (${info.method || "?"}/${info.backbone || "?"})`;
-          // regression predicts rails directly → cleanest for labeling; prefer it.
-          if (info.method === "regression" && !preferred) { o.selected = true; preferred = true; }
           lm.appendChild(o);
         });
+        // Default the auto-label model to twinkling-rocket-21 when available.
+        if (data.models.some((m) => m.name === "twinkling-rocket-21")) {
+          lm.value = "twinkling-rocket-21";
+        }
         const ld = $("lblDetectDevice");
         ld.innerHTML = "";
         data.devices.forEach((d) => {
@@ -1232,277 +1199,6 @@
       return b >= 1048576 ? (b / 1048576).toFixed(1) + " MB"
            : b >= 1024 ? (b / 1024).toFixed(0) + " KB" : b + " B";
     }
-    // ----- Upload tab: local (left) <-> server (right), File-Browser-style -----
-    let upLoaded = false, upActive = "L";
-    const upFSA = !!(window.showDirectoryPicker);
-    const UP = {
-      L: { root: null, stack: [], entries: [] },   // local (File System Access API)
-      R: { path: null, parent: "", entries: [] },  // server
-    };
-    const UP_ARCHIVE_RE = /\.(zip|tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz|gz|bz2|xz|7z|rar)$/i;
-    const UP_IMG_RE = /\.(png|jpe?g|gif|bmp|webp|svg|ico)$/i;
-    function upStatus(t) { $("upStatus").textContent = t; }
-    function upSetActive(side) {
-      upActive = side;
-      $("upPaneL").classList.toggle("active", side === "L");
-      $("upPaneR").classList.toggle("active", side === "R");
-      upUpdateBtns();
-    }
-    function upCurLocalDir() { return UP.L.stack.length ? UP.L.stack[UP.L.stack.length - 1] : null; }
-
-    // ---- Local pane (File System Access API) ----
-    async function upOpenLocal() {
-      if (!upFSA) { $("upLocalInput").click(); return; }
-      try {
-        const h = await window.showDirectoryPicker({ mode: "readwrite" });
-        UP.L.root = h; UP.L.stack = [h];
-        await upLoadLocal(); upSetActive("L");
-      } catch (e) { if (e.name !== "AbortError") upStatus("로컬 폴더 열기 실패: " + e.message); }
-    }
-    async function upLoadLocal() {
-      const dir = upCurLocalDir();
-      if (!dir) { $("upListL").innerHTML = "<div class='fb2-hint'>📂 ‘로컬 폴더 열기’를 눌러 시작하세요.</div>"; return; }
-      const entries = [];
-      for await (const [name, handle] of dir.entries()) {
-        const isDir = handle.kind === "directory";
-        let size = 0;
-        if (!isDir) { try { size = (await handle.getFile()).size; } catch (_) {} }
-        entries.push({ name, isDir, handle, size });
-      }
-      entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
-      UP.L.entries = entries;
-      const path = UP.L.stack.map((h) => h.name).join(" / ");
-      $("upPathL").textContent = "🖥 " + path; $("upPathL").title = path;
-      $("upUpL").disabled = UP.L.stack.length <= 1;
-      upRender("L");
-    }
-    // Fallback (no FSA): a webkitdirectory input picks a folder; list files flat.
-    function upLocalFromInput(fileList) {
-      UP.L.root = null; UP.L.stack = [];
-      UP.L.entries = Array.from(fileList).map((f) => ({ name: f.name, isDir: false, file: f, size: f.size }));
-      $("upPathL").textContent = "🖥 로컬 (선택한 파일 " + UP.L.entries.length + "개)";
-      $("upUpL").disabled = true;
-      upRender("L");
-    }
-
-    // ---- Server pane (same /api/browse as the File Browser) ----
-    async function upLoadServer(path) {
-      try {
-        const url = "/api/browse" + (path ? `?path=${encodeURIComponent(path)}` : "");
-        const d = await (await fetch(url)).json();
-        if (!d.ok) throw new Error(d.error || "browse 실패");
-        UP.R.path = d.path; UP.R.parent = d.parent || "";
-        UP.R.entries = [
-          ...d.dirs.map((x) => ({ ...x, isDir: true })),
-          ...d.files.map((x) => ({ ...x, isDir: false })),
-        ];
-        $("upPathR").textContent = "🗄 " + d.path; $("upPathR").title = d.path;
-        $("upUpR").disabled = !d.parent;
-        if ($("serverFolder")) $("serverFolder").value = d.path;  // handoff to other tabs
-        upRender("R");
-      } catch (e) { upStatus("서버 오류: " + e.message); }
-    }
-
-    function upRender(side) {
-      const st = UP[side], el = $("upList" + side); el.innerHTML = "";
-      if (!st.entries.length) { el.innerHTML = "<div class='img-item'>(빈 폴더)</div>"; }
-      st.entries.forEach((e, i) => {
-        const row = document.createElement("div"); row.className = "img-item";
-        const cb = document.createElement("input");
-        cb.type = "checkbox"; cb.dataset.i = i; cb.onclick = (ev) => ev.stopPropagation();
-        cb.onchange = () => { upSetActive(side); upSyncAll(side); upUpdateBtns(); };
-        const isArc = !e.isDir && UP_ARCHIVE_RE.test(e.name);
-        const ico = e.isDir ? "📁" : isArc ? "🗜️" : UP_IMG_RE.test(e.name) ? "🖼️" : "📄";
-        const nm = document.createElement("span");
-        nm.style.cssText = "flex:1;cursor:pointer;word-break:break-all;";
-        nm.textContent = `${ico} ${e.name}`;
-        nm.onclick = async (ev) => {
-          ev.stopPropagation(); upSetActive(side);
-          if (!e.isDir) return;
-          if (side === "R") upLoadServer(e.path);
-          else { UP.L.stack.push(e.handle); await upLoadLocal(); }
-        };
-        const meta = document.createElement("span");
-        meta.className = "mk"; meta.style.color = "var(--muted)";
-        meta.textContent = e.isDir ? (e.images ? `${e.images} imgs` : "") : fmtSize(e.size || 0);
-        row.append(cb, nm, meta); el.appendChild(row);
-      });
-      const nd = st.entries.filter((e) => e.isDir).length;
-      $("upCnt" + side).textContent = `폴더 ${nd} · 파일 ${st.entries.length - nd}`;
-      upSyncAll(side); upUpdateBtns();
-    }
-    function upToggleAll(side) {
-      const c = $("upAll" + side).checked;
-      $("upList" + side).querySelectorAll("input[type=checkbox]").forEach((x) => { x.checked = c; });
-      $("upAll" + side).indeterminate = false; upSetActive(side); upUpdateBtns();
-    }
-    function upSyncAll(side) {
-      const checks = [...$("upList" + side).querySelectorAll("input[type=checkbox]")];
-      const n = checks.filter((c) => c.checked).length;
-      const box = $("upAll" + side);
-      box.checked = n > 0 && n === checks.length;
-      box.indeterminate = n > 0 && n < checks.length;
-    }
-    function upSelected(side) {
-      return [...$("upList" + side).querySelectorAll("input[type=checkbox]:checked")]
-        .map((c) => UP[side].entries[+c.dataset.i]);
-    }
-    function upUpdateBtns() {
-      const locSel = upSelected("L"), srvSel = upSelected("R");
-      const srvFiles = srvSel.filter((e) => !e.isDir).length;
-      const nArc = srvSel.filter((e) => !e.isDir && UP_ARCHIVE_RE.test(e.name)).length;
-      $("upUploadBtn").disabled = !(locSel.length && UP.R.path);
-      $("upDownloadBtn").disabled = !(srvFiles && UP.L.root);
-      $("upExtractBtn").disabled = nArc === 0;
-      $("upExtractBtn").textContent = nArc > 1 ? `🗜️ 압축파일 풀기 (${nArc})` : "🗜️ 압축파일 풀기";
-      $("upDelBtn").disabled = (upActive === "L" ? locSel.length : srvSel.length) === 0;
-    }
-
-    function upProgStart() { $("upProgWrap").style.display = "block"; $("upProgBar").classList.remove("indet"); $("upProgBar").style.width = "0%"; }
-    function upProgSet(p) { $("upProgBar").classList.remove("indet"); $("upProgBar").style.width = (p || 0) + "%"; }
-    function upProgIndet() { $("upProgBar").classList.add("indet"); }
-    function upProgEnd() { setTimeout(() => { $("upProgWrap").style.display = "none"; $("upProgBar").classList.remove("indet"); $("upProgBar").style.width = "0%"; }, 600); }
-
-    // Recursively collect File objects from a local entry (file or dir handle).
-    async function upCollectFiles(e, prefix) {
-      const out = [];
-      if (e.file) { out.push({ file: e.file, name: (prefix || "") + e.name }); return out; }
-      if (!e.isDir) { const f = await e.handle.getFile(); out.push({ file: f, name: (prefix || "") + e.name }); return out; }
-      for await (const [name, handle] of e.handle.entries()) {
-        out.push(...await upCollectFiles({ name, isDir: handle.kind === "directory", handle }, (prefix || "") + e.name + "/"));
-      }
-      return out;
-    }
-
-    // ---- Upload: local selection -> server current path ----
-    async function upDoUpload() {
-      const sel = upSelected("L");
-      if (!sel.length || !UP.R.path) return;
-      upStatus("업로드할 파일 수집 중…"); upProgStart(); upProgIndet();
-      const files = [];
-      for (const e of sel) files.push(...await upCollectFiles(e, ""));
-      if (!files.length) { upProgEnd(); upStatus("업로드할 파일이 없습니다."); return; }
-      const fd = new FormData();
-      fd.append("path", UP.R.path);
-      files.forEach((x) => fd.append("files", x.file, x.name.split("/").pop()));
-      const xhr = new XMLHttpRequest();
-      const t0 = performance.now();
-      xhr.upload.onprogress = (ev) => {
-        if (ev.lengthComputable) {
-          const pct = Math.round((ev.loaded / ev.total) * 100);
-          const secs = (performance.now() - t0) / 1000, mbps = secs > 0 ? ev.loaded / 1048576 / secs : 0;
-          upProgSet(pct);
-          upStatus(`업로드 ${pct}% (${(ev.loaded/1048576).toFixed(1)}/${(ev.total/1048576).toFixed(1)} MB) · ${mbps.toFixed(1)} MB/s`);
-        }
-      };
-      xhr.onload = () => {
-        upProgEnd();
-        let d = {}; try { d = JSON.parse(xhr.responseText); } catch (_) {}
-        if (xhr.status >= 400) { upStatus("업로드 실패: " + (d.error || xhr.status)); return; }
-        upStatus(`업로드 ${d.saved}개 완료${d.skipped ? ` (${d.skipped} 건너뜀)` : ""}`);
-        upLoadServer(UP.R.path);
-      };
-      xhr.onerror = () => { upProgEnd(); upStatus("업로드 네트워크 오류"); };
-      xhr.open("POST", "/api/upload_to_server"); xhr.send(fd);
-    }
-
-    // ---- Download: server selection -> local current dir (FSA write) ----
-    async function upDoDownload() {
-      const dir = upCurLocalDir();
-      const sel = upSelected("R").filter((e) => !e.isDir);
-      if (!sel.length || !dir) { upStatus("로컬 폴더를 열고 서버 파일을 선택하세요."); return; }
-      upProgStart(); let done = 0;
-      for (const e of sel) {
-        upProgSet(Math.round((done / sel.length) * 100));
-        upStatus(`다운로드 ${done + 1}/${sel.length}: ${e.name}`);
-        try {
-          const res = await fetch("/api/fs/download?path=" + encodeURIComponent(e.path));
-          if (!res.ok) throw new Error("HTTP " + res.status);
-          const blob = await res.blob();
-          const fh = await dir.getFileHandle(e.name, { create: true });
-          const w = await fh.createWritable(); await w.write(blob); await w.close();
-          done++;
-        } catch (err) { upStatus(`${e.name} 실패: ${err.message}`); }
-      }
-      upProgEnd(); upStatus(`다운로드 ${done}/${sel.length} 완료`);
-      await upLoadLocal();
-    }
-
-    async function upDelete() {
-      if (upActive === "L") {
-        const dir = upCurLocalDir(), sel = upSelected("L");
-        if (!dir || !sel.length) return;
-        if (!confirm(`로컬 ${sel.length}개 항목을 삭제할까요?`)) return;
-        let ok = 0;
-        for (const e of sel) { try { await dir.removeEntry(e.name, { recursive: true }); ok++; } catch (_) {} }
-        upStatus(`로컬 삭제 ${ok}개`); await upLoadLocal();
-      } else {
-        const sel = upSelected("R"); if (!sel.length) return;
-        if (!confirm(`서버 ${sel.length}개 항목을 삭제할까요?${sel.some((e) => e.isDir) ? "\n(폴더는 내용까지 삭제)" : ""}`)) return;
-        let ok = 0;
-        for (const e of sel) {
-          const fd = new FormData(); fd.append("path", e.path);
-          const r = await (await fetch("/api/fs/delete", { method: "POST", body: fd })).json();
-          if (!r.error) ok++;
-        }
-        upStatus(`서버 삭제 ${ok}개`); upLoadServer(UP.R.path);
-      }
-    }
-    async function upExtract() {
-      const arcs = upSelected("R").filter((e) => !e.isDir && UP_ARCHIVE_RE.test(e.name));
-      if (!arcs.length) { upStatus("선택된 압축 파일이 없습니다(서버)."); return; }
-      if (!confirm(arcs.length > 1 ? `${arcs.length}개 압축 파일을 해제할까요?` : `압축을 해제할까요?\n${arcs[0].name}`)) return;
-      const fd = new FormData(); arcs.forEach((e) => fd.append("path", e.path));
-      upProgStart(); upStatus("해제 준비 중…");
-      let okN = 0, failN = 0;
-      await fbStream("/api/fs/extract_stream", fd, (m) => {
-        if (m.type === "file") { upStatus(`[${m.index}/${m.total}] ${m.name} 준비 중…`); upProgSet(0); }
-        else if (m.type === "status") { upStatus(m.message); if (!m.total) upProgIndet(); }
-        else if (m.type === "progress") { if (m.pct == null) upProgIndet(); else upProgSet(m.pct); }
-        else if (m.type === "done") { okN = m.ok; failN = m.fail; }
-        else if (m.type === "error") { failN++; }
-      });
-      upProgEnd(); upStatus(`해제 완료: ${okN}개 성공${failN ? `, ${failN}개 실패` : ""}`);
-      upLoadServer(UP.R.path);
-    }
-    async function upMkdir() {
-      if (upActive === "L") {
-        const dir = upCurLocalDir(); if (!dir) { upStatus("로컬 폴더를 먼저 여세요."); return; }
-        const name = (prompt("로컬 새 폴더 이름:") || "").trim(); if (!name) return;
-        try { await dir.getDirectoryHandle(name, { create: true }); upStatus(`로컬 폴더 생성: ${name}`); await upLoadLocal(); }
-        catch (e) { upStatus("생성 실패: " + e.message); }
-      } else {
-        const name = (prompt("서버 새 폴더 이름:") || "").trim(); if (!name) return;
-        const fd = new FormData(); fd.append("parent", UP.R.path || ""); fd.append("name", name);
-        const r = await (await fetch("/api/fs/mkdir", { method: "POST", body: fd })).json();
-        if (r.error) { upStatus("생성 실패: " + r.error); return; }
-        upStatus(`서버 폴더 생성: ${name}`); upLoadServer(UP.R.path);
-      }
-    }
-
-    function upInit() {
-      $("upPaneL").addEventListener("click", () => upSetActive("L"));
-      $("upPaneR").addEventListener("click", () => upSetActive("R"));
-      $("upUpL").onclick = async (ev) => { ev.stopPropagation(); upSetActive("L"); if (UP.L.stack.length > 1) { UP.L.stack.pop(); await upLoadLocal(); } };
-      $("upUpR").onclick = (ev) => { ev.stopPropagation(); upSetActive("R"); if (UP.R.parent) upLoadServer(UP.R.parent); };
-      $("upRefreshL").onclick = (ev) => { ev.stopPropagation(); upSetActive("L"); upLoadLocal(); };
-      $("upRefreshR").onclick = (ev) => { ev.stopPropagation(); upSetActive("R"); upLoadServer(UP.R.path); };
-      $("upAllL").onclick = (ev) => ev.stopPropagation();
-      $("upAllR").onclick = (ev) => ev.stopPropagation();
-      $("upAllL").onchange = () => upToggleAll("L");
-      $("upAllR").onchange = () => upToggleAll("R");
-      $("upOpenLocalBtn").onclick = upOpenLocal;
-      $("upLocalInput").onchange = () => { if ($("upLocalInput").files.length) upLocalFromInput($("upLocalInput").files); };
-      $("upUploadBtn").onclick = upDoUpload;
-      $("upDownloadBtn").onclick = upDoDownload;
-      $("upExtractBtn").onclick = upExtract;
-      $("upDelBtn").onclick = upDelete;
-      $("upMkdirBtn").onclick = upMkdir;
-      if (!upFSA) upStatus("이 브라우저는 로컬 폴더 탐색을 지원하지 않습니다(Chrome/Edge 권장). ‘로컬 폴더 열기’로 파일을 선택해 업로드할 수 있습니다.");
-      upLoadServer();          // right pane: server root
-      upSetActive("L");
-    }
-
     // Convert a server folder of big images to resized JPEGs (one-time), then
     // point inference at the faster '_opt' folder.
     async function runOptimize(path) {
@@ -1563,33 +1259,33 @@
     // ----- Tabs -----
     let trainOptionsLoaded = false;
     function showPage(which) {
-      const pages = { upload: "pageUpload", infer: "pageInfer", label: "pageLabel", train: "pageTrain", files: "pageFiles" };
-      const tabs = { upload: "tabUpload", infer: "tabInfer", label: "tabLabel", train: "tabTrain", files: "tabFiles" };
+      const pages = { infer: "pageInfer", label: "pageLabel", train: "pageTrain", files: "pageFiles" };
+      const tabs = { infer: "tabInfer", label: "tabLabel", train: "tabTrain", files: "tabFiles" };
       Object.entries(pages).forEach(([k, id]) => { $(id).style.display = k === which ? "flex" : "none"; });
       Object.entries(tabs).forEach(([k, id]) => { $(id).classList.toggle("active", k === which); });
       if (which === "train" && !trainOptionsLoaded) { loadTrainOptions(); trainOptionsLoaded = true; }
-      if (which === "upload" && !upLoaded) { upInit(); upLoaded = true; }
       if (which === "files" && !fbLoaded) { fbInit(); fbLoaded = true; }
     }
-    $("tabUpload").onclick = () => showPage("upload");
     $("tabInfer").onclick = () => showPage("infer");
     $("tabLabel").onclick = () => showPage("label");
     $("tabTrain").onclick = () => showPage("train");
     $("tabFiles").onclick = () => showPage("files");
 
-    // ----- File Browser tab (dual-pane, Commander-style) -----
+    // ----- File Browser: each pane is 로컬(local) or 서버(server) -----
     let fbLoaded = false, fbActive = "L";
+    let fbLocalTarget = "L";
+    const fbFSA = !!(window.showDirectoryPicker);
     const FB_ARCHIVE_RE = /\.(zip|tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz|gz|bz2|xz|7z|rar)$/i;
     const FB_IMG_RE = /\.(png|jpe?g|gif|bmp|webp|svg|ico)$/i;
-    // Per-pane state. parent = parent path for the ⬆ button.
+    // Per-pane state. type: 'server' uses path/parent; 'local' uses a File System
+    // Access dir-handle stack.
     const FB = {
-      L: { path: null, parent: "", entries: [] },
-      R: { path: null, parent: "", entries: [] },
+      L: { type: "local",  path: null, parent: "", root: null, stack: [], entries: [] },
+      R: { type: "server", path: null, parent: "", root: null, stack: [], entries: [] },
     };
     function fbSetStatus(t) { $("fbStatus").textContent = t; }
-    function fbBasename(p) { return p.replace(/\/+$/, "").split("/").pop(); }
     function fbOther(side) { return side === "L" ? "R" : "L"; }
-
+    function fbCurLocalDir(side) { const s = FB[side]; return s.stack.length ? s.stack[s.stack.length - 1] : null; }
     function fbSetActive(side) {
       fbActive = side;
       $("fbPaneL").classList.toggle("active", side === "L");
@@ -1597,7 +1293,11 @@
       fbUpdateActionBtns();
     }
 
-    async function fbLoad(side, path) {
+    function fbLoad(side, path) {
+      if (FB[side].type === "server") return fbLoadServer(side, path !== undefined ? path : FB[side].path);
+      return fbLoadLocal(side);
+    }
+    async function fbLoadServer(side, path) {
       try {
         const url = "/api/browse" + (path ? `?path=${encodeURIComponent(path)}` : "");
         const d = await (await fetch(url)).json();
@@ -1608,15 +1308,62 @@
           ...d.dirs.map((x) => ({ ...x, isDir: true })),
           ...d.files.map((x) => ({ ...x, isDir: false })),
         ];
-        $("fbPath" + side).textContent = d.path;
+        $("fbPath" + side).textContent = "🗄 " + d.path;
         $("fbPath" + side).title = d.path;
         $("fbUp" + side).disabled = !d.parent;
+        if ($("serverFolder")) $("serverFolder").value = d.path;
+        try { localStorage.setItem("fb_server_" + side, d.path); } catch (_) {}  // remember last server path
         fbRender(side);
-      } catch (e) { fbSetStatus("오류: " + e.message); }
+      } catch (e) {
+        if (path) { FB[side].path = null; return fbLoadServer(side, ""); }  // stale remembered path → fall back to root
+        fbSetStatus("서버 오류: " + e.message);
+      }
+    }
+    async function fbOpenLocal(side) {
+      if (!fbFSA) { fbLocalTarget = side; fbSetActive(side); $("fbLocalInput").click(); return; }
+      try {
+        const h = await window.showDirectoryPicker({ mode: "readwrite" });
+        FB[side].root = h; FB[side].stack = [h];
+        await fbLoadLocal(side); fbSetActive(side);
+      } catch (e) { if (e.name !== "AbortError") fbSetStatus("로컬 폴더 열기 실패: " + e.message); }
+    }
+    async function fbLoadLocal(side) {
+      const st = FB[side], dir = fbCurLocalDir(side);
+      $("fbPath" + side).textContent = "🖥 " + (st.stack.map((h) => h.name).join(" / ") || "(로컬)");
+      $("fbUp" + side).disabled = st.stack.length <= 1;
+      if (!dir) {
+        st.entries = [];
+        const el = $("fbList" + side); el.innerHTML = "";
+        const hint = document.createElement("div");
+        hint.className = "fb2-hint"; hint.style.cursor = "pointer";
+        hint.textContent = "📂 클릭해서 로컬 폴더 열기";
+        hint.onclick = () => fbOpenLocal(side);
+        el.appendChild(hint);
+        $("fbCnt" + side).textContent = "";
+        fbUpdateActionBtns();
+        return;
+      }
+      const entries = [];
+      for await (const [name, handle] of dir.entries()) {
+        const isDir = handle.kind === "directory";
+        let size = 0;
+        if (!isDir) { try { size = (await handle.getFile()).size; } catch (_) {} }
+        entries.push({ name, isDir, handle, size });
+      }
+      entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
+      st.entries = entries;
+      fbRender(side);
+    }
+    function fbLocalFromInput(side, fileList) {
+      FB[side].root = null; FB[side].stack = [];
+      FB[side].entries = Array.from(fileList).map((f) => ({ name: f.name, isDir: false, file: f, size: f.size }));
+      $("fbPath" + side).textContent = "🖥 로컬 (선택 파일 " + FB[side].entries.length + "개)";
+      $("fbUp" + side).disabled = true;
+      fbRender(side);
     }
 
     function fbRender(side) {
-      const st = FB[side];
+      const st = FB[side], isServer = st.type === "server";
       const el = $("fbList" + side); el.innerHTML = "";
       if (!st.entries.length) { el.innerHTML = "<div class='img-item'>(빈 폴더)</div>"; }
       st.entries.forEach((e, i) => {
@@ -1629,31 +1376,37 @@
         const nm = document.createElement("span");
         nm.style.cssText = "flex:1;cursor:pointer;word-break:break-all;";
         nm.textContent = `${ico} ${e.name}`;
-        nm.onclick = (ev) => { ev.stopPropagation(); fbSetActive(side); e.isDir ? fbLoad(side, e.path) : fbPreview(e); };
+        nm.onclick = async (ev) => {
+          ev.stopPropagation(); fbSetActive(side);
+          if (e.isDir) {
+            if (isServer) fbLoadServer(side, e.path);
+            else { st.stack.push(e.handle); await fbLoadLocal(side); }
+          } else if (isServer) { fbPreview(e); } else { fbPreviewLocal(e); }
+        };
         const meta = document.createElement("span");
         meta.className = "mk"; meta.style.color = "var(--muted)";
-        meta.textContent = e.isDir ? (e.images ? `${e.images} imgs` : "") : fmtSize(e.size);
+        meta.textContent = e.isDir ? (e.images ? `${e.images} imgs` : "") : fmtSize(e.size || 0);
         const acts = document.createElement("span");
         acts.style.cssText = "display:flex;gap:4px;margin-left:8px;";
-        if (isArc) acts.appendChild(fbBtn("해제", "#5e35b1", (ev) => { ev.stopPropagation(); fbExtract(side, [e]); }));
-        if (!e.isDir) acts.appendChild(fbBtn("⬇", "#607d8b", (ev) => { ev.stopPropagation(); window.open("/api/fs/download?path=" + encodeURIComponent(e.path), "_blank"); }));
-        acts.appendChild(fbBtn("이름", "#455a64", (ev) => { ev.stopPropagation(); fbRename(side, e); }));
+        if (isServer) {
+          if (isArc) acts.appendChild(fbBtn("해제", "#5e35b1", (ev) => { ev.stopPropagation(); fbExtract(side, [e]); }));
+          if (!e.isDir) acts.appendChild(fbBtn("⬇", "#607d8b", (ev) => { ev.stopPropagation(); window.open("/api/fs/download?path=" + encodeURIComponent(e.path), "_blank"); }));
+          acts.appendChild(fbBtn("이름", "#455a64", (ev) => { ev.stopPropagation(); fbRename(side, e); }));
+        }
         acts.appendChild(fbBtn("삭제", "var(--danger)", (ev) => { ev.stopPropagation(); fbDelete(side, [e]); }));
         row.append(cb, nm, meta, acts); el.appendChild(row);
       });
       const nd = st.entries.filter((e) => e.isDir).length;
       $("fbCnt" + side).textContent = `폴더 ${nd} · 파일 ${st.entries.length - nd}`;
-      fbSyncAll(side);  // reset the select-all box for the fresh listing
+      fbSyncAll(side);
       fbUpdateActionBtns();
     }
-    // Select-all box: toggle every row checkbox in a pane.
     function fbToggleAll(side) {
       const checked = $("fbAll" + side).checked;
       $("fbList" + side).querySelectorAll("input[type=checkbox]").forEach((c) => { c.checked = checked; });
       $("fbAll" + side).indeterminate = false;
       fbSetActive(side); fbUpdateActionBtns();
     }
-    // Reflect per-row selection back onto the select-all box (checked/indeterminate).
     function fbSyncAll(side) {
       const checks = [...$("fbList" + side).querySelectorAll("input[type=checkbox]")];
       const n = checks.filter((c) => c.checked).length;
@@ -1671,30 +1424,25 @@
       return [...$("fbList" + side).querySelectorAll("input[type=checkbox]:checked")]
         .map((c) => FB[side].entries[+c.dataset.i]);
     }
+    function fbDstReady(side) { return FB[side].type === "server" ? !!FB[side].path : !!fbCurLocalDir(side); }
+    function fbTypeName(side) { return FB[side].type === "server" ? "서버" : "로컬"; }
     function fbUpdateActionBtns() {
       const sel = fbSelected(fbActive);
-      const n = sel.length;
       const nArc = sel.filter((e) => !e.isDir && FB_ARCHIVE_RE.test(e.name)).length;
-      const other = fbOther(fbActive);
-      const dst = FB[other].path;
-      $("fbDelSelBtn").disabled = n === 0;
-      $("fbCopyBtn").disabled = n === 0 || !dst;
-      $("fbMoveBtn").disabled = n === 0 || !dst;
-      $("fbExtractSelBtn").disabled = nArc === 0;
+      $("fbDelSelBtn").disabled = sel.length === 0;
+      $("fbExtractSelBtn").disabled = nArc === 0 || FB[fbActive].type !== "server";
       $("fbExtractSelBtn").textContent = nArc > 1 ? `🗜️ 압축파일 풀기 (${nArc})` : "🗜️ 압축파일 풀기";
-      $("fbCopyBtn").textContent = `복사 → ${other}`;
-      $("fbMoveBtn").textContent = `이동 → ${other}`;
+      // 보내기: 왼쪽(L) → 오른쪽(R) · 받기: 왼쪽(L) ← 오른쪽(R)
+      $("fbSendBtn").textContent = `보내기 (${fbTypeName("L")} → ${fbTypeName("R")})`;
+      $("fbRecvBtn").textContent = `받기 (${fbTypeName("L")} ← ${fbTypeName("R")})`;
+      $("fbSendBtn").disabled = fbSelected("L").length === 0 || !fbDstReady("R");
+      $("fbRecvBtn").disabled = fbSelected("R").length === 0 || !fbDstReady("L");
     }
 
-    // Progress-bar helpers (determinate by %, or indeterminate stripe).
     function fbProgStart() { $("fbProgWrap").style.display = "block"; fbProgSet(0); }
     function fbProgSet(pct) { const b = $("fbProgBar"); b.classList.remove("indet"); b.style.width = (pct || 0) + "%"; }
     function fbProgIndet() { $("fbProgBar").classList.add("indet"); }
-    function fbProgEnd() {
-      setTimeout(() => { $("fbProgWrap").style.display = "none";
-        const b = $("fbProgBar"); b.classList.remove("indet"); b.style.width = "0%"; }, 600);
-    }
-    // POST and parse a Server-Sent-Events stream, invoking onMsg(obj) per event.
+    function fbProgEnd() { setTimeout(() => { $("fbProgWrap").style.display = "none"; const b = $("fbProgBar"); b.classList.remove("indet"); b.style.width = "0%"; }, 600); }
     async function fbStream(url, fd, onMsg) {
       const res = await fetch(url, { method: "POST", body: fd });
       if (!res.ok || !res.body) { onMsg({ type: "error", error: "HTTP " + res.status }); return; }
@@ -1712,45 +1460,102 @@
         }
       }
     }
-
-    async function fbTransfer(kind) {  // kind: 'copy' | 'move'
-      const side = fbActive, other = fbOther(side);
-      const items = fbSelected(side);
-      const dst = FB[other].path;
-      if (!items.length || !dst) return;
-      if (FB[side].path === dst) { fbSetStatus("양쪽 패널이 같은 폴더입니다."); return; }
-      const verb = kind === "copy" ? "복사" : "이동";
-      if (!confirm(`${items.length}개 항목을 ${other} 패널로 ${verb}할까요?\n→ ${dst}`)) return;
-
-      if (kind === "copy") {  // streamed with byte-level progress
-        const fd = new FormData();
-        items.forEach((e) => fd.append("src", e.path));
-        fd.append("dst", dst);
-        fbProgStart(); fbSetStatus("복사 준비 중…");
-        let finalMsg = "복사 완료";
-        await fbStream("/api/fs/copy_stream", fd, (m) => {
-          if (m.type === "status") { fbSetStatus(m.message); if (!m.total) fbProgIndet(); }
-          else if (m.type === "progress") {
-            fbProgSet(m.pct); fbSetStatus(`복사 ${m.pct}% · ${m.name}`);
-          } else if (m.type === "done") {
-            finalMsg = `복사 완료: ${m.files}개 파일`
-              + (m.skipped && m.skipped.length ? `, ${m.skipped.length}개 건너뜀` : "");
-          } else if (m.type === "error") { finalMsg = "복사 실패: " + m.error; }
-        });
-        fbProgEnd(); fbSetStatus(finalMsg); fbLoad(other, dst);
-        return;
+    // Recursively gather File objects from a local entry (file or dir handle).
+    async function fbCollectFiles(e, prefix) {
+      const out = [];
+      if (e.file) { out.push({ file: e.file, name: (prefix || "") + e.name }); return out; }
+      if (!e.isDir) { const f = await e.handle.getFile(); out.push({ file: f, name: (prefix || "") + e.name }); return out; }
+      for await (const [name, handle] of e.handle.entries()) {
+        out.push(...await fbCollectFiles({ name, isDir: handle.kind === "directory", handle }, (prefix || "") + e.name + "/"));
       }
+      return out;
+    }
 
-      // move: per-item JSON (rename within the same filesystem is fast)
-      fbSetStatus("이동 중…");
-      let ok = 0, fail = 0, msg = "";
-      for (const e of items) {
-        const fd = new FormData(); fd.append("src", e.path); fd.append("dst", dst);
-        const r = await (await fetch("/api/fs/move", { method: "POST", body: fd })).json();
-        if (r.error) { fail++; msg = r.error; } else ok++;
+    // Copy the selected items of pane `src` into pane `dst` (any type combo).
+    async function fbTransferDir(src, dst) {
+      const items = fbSelected(src);
+      if (!items.length || !fbDstReady(dst)) return;
+      const st = FB[src].type, dt = FB[dst].type;
+      if (st === "server" && dt === "server") { await fbServerCopy(src, dst, items); return; }
+      if (st === "local" && dt === "server") { await fbUpload(items, FB[dst].path, dst); return; }
+      if (st === "server" && dt === "local") { await fbDownload(items, dst); return; }
+      await fbLocalCopy(items, dst);
+    }
+    async function fbServerCopy(src, dst, items) {
+      const dpath = FB[dst].path;
+      if (FB[src].path === dpath) { fbSetStatus("양쪽 패널이 같은 폴더입니다."); return; }
+      if (!confirm(`${items.length}개 항목을 복사할까요?\n→ ${dpath}`)) return;
+      const fd = new FormData(); items.forEach((e) => fd.append("src", e.path)); fd.append("dst", dpath);
+      fbProgStart(); fbSetStatus("복사 준비 중…");
+      let finalMsg = "복사 완료";
+      await fbStream("/api/fs/copy_stream", fd, (m) => {
+        if (m.type === "status") { fbSetStatus(m.message); if (!m.total) fbProgIndet(); }
+        else if (m.type === "progress") { fbProgSet(m.pct); fbSetStatus(`복사 ${m.pct}% · ${m.name}`); }
+        else if (m.type === "done") { finalMsg = `복사 완료: ${m.files}개 파일` + (m.skipped && m.skipped.length ? `, ${m.skipped.length}개 건너뜀` : ""); }
+        else if (m.type === "error") { finalMsg = "복사 실패: " + m.error; }
+      });
+      fbProgEnd(); fbSetStatus(finalMsg); fbLoad(dst, dpath);
+    }
+    async function fbUpload(items, dstPath, other) {
+      fbProgStart(); fbProgIndet(); fbSetStatus("업로드할 파일 수집 중…");
+      const files = [];
+      for (const e of items) files.push(...await fbCollectFiles(e, ""));
+      if (!files.length) { fbProgEnd(); fbSetStatus("업로드할 파일이 없습니다."); return; }
+      const fd = new FormData(); fd.append("path", dstPath);
+      files.forEach((x) => fd.append("files", x.file, x.name.split("/").pop()));
+      const xhr = new XMLHttpRequest(); const t0 = performance.now();
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) {
+          const pct = Math.round((ev.loaded / ev.total) * 100);
+          const secs = (performance.now() - t0) / 1000, mbps = secs > 0 ? ev.loaded / 1048576 / secs : 0;
+          fbProgSet(pct);
+          fbSetStatus(`업로드 ${pct}% (${(ev.loaded / 1048576).toFixed(1)}/${(ev.total / 1048576).toFixed(1)} MB) · ${mbps.toFixed(1)} MB/s`);
+        }
+      };
+      xhr.onload = () => {
+        fbProgEnd();
+        let d = {}; try { d = JSON.parse(xhr.responseText); } catch (_) {}
+        if (xhr.status >= 400) { fbSetStatus("업로드 실패: " + (d.error || xhr.status)); return; }
+        fbSetStatus(`업로드 ${d.saved}개 완료${d.skipped ? ` (${d.skipped} 건너뜀)` : ""}`);
+        fbLoad(other, dstPath);
+      };
+      xhr.onerror = () => { fbProgEnd(); fbSetStatus("업로드 네트워크 오류"); };
+      xhr.open("POST", "/api/upload_to_server"); xhr.send(fd);
+    }
+    async function fbDownload(items, other) {
+      const dir = fbCurLocalDir(other);
+      const files = items.filter((e) => !e.isDir);
+      if (!files.length || !dir) { fbSetStatus("다운로드할 파일과 로컬 대상 폴더가 필요합니다."); return; }
+      fbProgStart(); let done = 0;
+      for (const e of files) {
+        fbProgSet(Math.round((done / files.length) * 100));
+        fbSetStatus(`다운로드 ${done + 1}/${files.length}: ${e.name}`);
+        try {
+          const res = await fetch("/api/fs/download?path=" + encodeURIComponent(e.path));
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const blob = await res.blob();
+          const fh = await dir.getFileHandle(e.name, { create: true });
+          const w = await fh.createWritable(); await w.write(blob); await w.close();
+          done++;
+        } catch (err) { fbSetStatus(`${e.name} 실패: ${err.message}`); }
       }
-      fbSetStatus(`이동 ${ok}개` + (fail ? `, 실패 ${fail} (${msg})` : ""));
-      fbLoad(other, dst); fbLoad(side, FB[side].path);
+      fbProgEnd(); fbSetStatus(`다운로드 ${done}/${files.length} 완료`); fbLoadLocal(other);
+    }
+    async function fbLocalCopy(items, other) {
+      const dir = fbCurLocalDir(other);
+      if (!dir) { fbSetStatus("대상 로컬 폴더가 필요합니다."); return; }
+      fbProgStart(); fbProgIndet();
+      const all = [];
+      for (const e of items) all.push(...await fbCollectFiles(e, ""));
+      let done = 0;
+      for (const x of all) {
+        try {
+          const fh = await dir.getFileHandle(x.name.split("/").pop(), { create: true });
+          const w = await fh.createWritable(); await w.write(x.file); await w.close(); done++;
+        } catch (_) {}
+        fbSetStatus(`복사 ${done}/${all.length}`);
+      }
+      fbProgEnd(); fbSetStatus(`복사 ${done}/${all.length} 완료`); fbLoadLocal(other);
     }
 
     async function fbDelete(side, entries) {
@@ -1758,56 +1563,57 @@
       const label = entries.length === 1 ? `"${entries[0].name}"` : `${entries.length}개 항목`;
       if (!confirm(`${label}을(를) 삭제할까요?${entries.some((e) => e.isDir) ? "\n(폴더는 내용까지 모두 삭제)" : ""}`)) return;
       let ok = 0, fail = 0;
+      if (FB[side].type === "local") {
+        const dir = fbCurLocalDir(side);
+        for (const e of entries) { try { await dir.removeEntry(e.name, { recursive: true }); ok++; } catch (_) { fail++; } }
+        fbSetStatus(`로컬 삭제 ${ok}개` + (fail ? `, 실패 ${fail}` : "")); fbLoadLocal(side); return;
+      }
       for (const e of entries) {
         const fd = new FormData(); fd.append("path", e.path);
         const r = await (await fetch("/api/fs/delete", { method: "POST", body: fd })).json();
         r.error ? fail++ : ok++;
       }
-      fbSetStatus(`삭제 ${ok}개` + (fail ? `, 실패 ${fail}` : ""));
-      fbLoad(side, FB[side].path);
+      fbSetStatus(`삭제 ${ok}개` + (fail ? `, 실패 ${fail}` : "")); fbLoadServer(side, FB[side].path);
     }
     async function fbRename(side, e) {
+      if (FB[side].type !== "server") return;
       const name = prompt("새 이름 또는 경로 (다른 폴더의 절대경로로 이동 가능):", e.name);
       if (!name || name === e.name) return;
       let dst = name.includes("/") ? name : (FB[side].path.replace(/\/+$/, "") + "/" + name);
       const fd = new FormData(); fd.append("src", e.path); fd.append("dst", dst);
       const r = await (await fetch("/api/fs/move", { method: "POST", body: fd })).json();
       if (r.error) { fbSetStatus("이동 실패: " + r.error); return; }
-      fbSetStatus("이동/이름변경 완료"); fbRefreshBoth();
+      fbSetStatus("이동/이름변경 완료"); fbLoadServer(side, FB[side].path);
     }
     async function fbExtract(side, entries) {
+      if (FB[side].type !== "server") { fbSetStatus("압축 해제는 서버 파일에서만 가능합니다."); return; }
       const arcs = entries.filter((e) => !e.isDir && FB_ARCHIVE_RE.test(e.name));
       if (!arcs.length) { fbSetStatus("선택된 압축 파일이 없습니다."); return; }
       const many = arcs.length > 1;
       if (!confirm(many ? `${arcs.length}개 압축 파일을 해제할까요?` : `압축을 해제할까요?\n${arcs[0].name}`)) return;
-      const fd = new FormData();
-      arcs.forEach((e) => fd.append("path", e.path));
+      const fd = new FormData(); arcs.forEach((e) => fd.append("path", e.path));
       fbProgStart(); fbSetStatus("해제 준비 중…");
       let okN = 0, failN = 0, errs = [];
       const pre = (m) => (m.totalFiles > 1 ? `[${m.index}/${m.totalFiles}] ` : "");
       await fbStream("/api/fs/extract_stream", fd, (m) => {
-        if (m.type === "batch") { /* total file count known */ }
-        else if (m.type === "file") { fbSetStatus(`[${m.index}/${m.total}] ${m.name} 준비 중…`); fbProgSet(0); }
+        if (m.type === "file") { fbSetStatus(`[${m.index}/${m.total}] ${m.name} 준비 중…`); fbProgSet(0); }
         else if (m.type === "status") { fbSetStatus(pre(m) + m.message); if (!m.total) fbProgIndet(); }
         else if (m.type === "progress") {
           if (m.pct == null) { fbProgIndet(); fbSetStatus(`${pre(m)}해제 중… ${m.name || ""}`); }
           else { fbProgSet(m.pct); fbSetStatus(`${pre(m)}해제 ${m.pct}% · ${m.name || ""}`); }
         }
         else if (m.type === "file_done") { if (m.total > 1) fbSetStatus(`[${m.index}/${m.total}] ${m.name} 완료`); }
-        else if (m.type === "done") {
-          okN = m.ok; failN = m.fail;
-          errs = (m.results || []).filter((r) => !r.ok).map((r) => `${r.name}: ${r.error}`);
-        }
+        else if (m.type === "done") { okN = m.ok; failN = m.fail; errs = (m.results || []).filter((r) => !r.ok).map((r) => `${r.name}: ${r.error}`); }
         else if (m.type === "error") { failN++; errs.push(m.error); }
       });
       fbProgEnd();
       fbSetStatus(`해제 완료: ${okN}개 성공` + (failN ? `, ${failN}개 실패 (${errs.slice(0, 2).join("; ")})` : ""));
-      fbRefreshBoth();
+      fbLoadServer(side, FB[side].path);
     }
-    async function fbPreview(e) {
+        async function fbPreview(e) {
       $("fbOverlay").style.display = "flex";
       $("fbPreviewTitle").textContent = e.name;
-      fbSetZoom(1);   // each preview opens at 100%
+      fbZoomEl = null; fbSetZoom(1);   // each preview opens at 100% on the body
       const body = $("fbPreviewBody");
       if (FB_IMG_RE.test(e.name)) {
         body.innerHTML = `<img src="/api/fs/preview?path=${encodeURIComponent(e.path)}">`;
@@ -1837,6 +1643,9 @@
           try {
             fbAttachPinch(hwpIfr.contentDocument);
             if (hwpIfr.contentDocument.body) hwpIfr.contentDocument.body.style.touchAction = "pan-x pan-y";
+            // Zoom the HWP page itself (inside the iframe), not the outer toolbar.
+            fbZoomEl = hwpIfr.contentDocument.body;
+            fbApplyZoom();
           } catch (_) { /* cross-origin/unavailable — native gestures apply */ }
         });
         let loaded = false;
@@ -1903,10 +1712,45 @@
     }
     function fbClosePreview() { $("fbOverlay").style.display = "none"; }
 
-    // Preview zoom (applies uniformly to images, PDF/HWP iframes, tables, text).
+    // Local file preview: stash the file on the server, then reuse the same
+    // path-based preview pipeline (images/PDF/HWP/xlsx/text) as server files.
+    async function fbPreviewLocal(e) {
+      $("fbOverlay").style.display = "flex";
+      $("fbPreviewTitle").textContent = e.name;
+      fbZoomEl = null; fbSetZoom(1);
+      const body = $("fbPreviewBody");
+      body.innerHTML = "<div class='info'>로컬 파일 준비 중…</div>";
+      try {
+        const file = e.file ? e.file : await e.handle.getFile();
+        const fd = new FormData(); fd.append("file", file, e.name);
+        const r = await (await fetch("/api/fs/stash", { method: "POST", body: fd })).json();
+        if (!r.ok) throw new Error(r.error || "stash 실패");
+        fbPreview({ name: e.name, path: r.path });
+      } catch (err) {
+        body.innerHTML = "<div class='info'>미리보기 실패: " + err.message + "</div>";
+      }
+    }
+
+    // Preview zoom. For iframe documents (HWP) we zoom the iframe's own document
+    // so the page — not just the surrounding toolbar — scales; otherwise we zoom
+    // the whole preview body (images, tables, text).
     let fbZoom = 1;
+    let fbZoomEl = null;   // element to zoom; null → the preview body
     function fbApplyZoom() {
-      $("fbPreviewBody").style.zoom = fbZoom;
+      if (fbZoomEl) {
+        // transform (not `zoom`) so fonts scale by the exact ratio, unaffected by
+        // the browser's minimum-font-size. width/height compensate so the iframe
+        // still scrolls to the whole scaled page.
+        try {
+          fbZoomEl.style.transformOrigin = "0 0";
+          fbZoomEl.style.transform = "scale(" + fbZoom + ")";
+          fbZoomEl.style.width = (100 / fbZoom) + "%";
+          fbZoomEl.style.height = (100 / fbZoom) + "%";
+        } catch (_) { /* ignore */ }
+        $("fbPreviewBody").style.zoom = 1;   // keep the toolbar/menus at 100%
+      } else {
+        $("fbPreviewBody").style.zoom = fbZoom;
+      }
       $("fbZoomPct").textContent = Math.round(fbZoom * 100) + "%";
     }
     function fbSetZoom(z) {
@@ -1938,47 +1782,91 @@
     }
     fbAttachPinch($("fbPreviewBody"));
 
-    function fbRefreshBoth() { fbLoad("L", FB.L.path); fbLoad("R", FB.R.path); }
+function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
     function fbInit() {
       ["L", "R"].forEach((side) => {
         $("fbPane" + side).addEventListener("click", () => fbSetActive(side));
-        $("fbUp" + side).onclick = (ev) => { ev.stopPropagation(); fbSetActive(side); if (FB[side].parent) fbLoad(side, FB[side].parent); };
-        $("fbRefresh" + side).onclick = (ev) => { ev.stopPropagation(); fbSetActive(side); fbLoad(side, FB[side].path); };
+        const setType = (type, reload) => {
+          FB[side].type = type;   // keep this pane's server path + local handle so switching restores each
+          $("fbType" + side).querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.v === type));
+          $("fbOpen" + side).style.display = type === "local" ? "" : "none";
+          if (reload) { fbSetActive(side); fbLoad(side); }
+        };
+        $("fbType" + side).querySelectorAll("button").forEach((b) => {
+          b.onclick = (ev) => {
+            ev.stopPropagation();
+            if (FB[side].type !== b.dataset.v) setType(b.dataset.v, true); else fbSetActive(side);
+          };
+        });
+        setType(FB[side].type, false);   // set initial active button + open-btn visibility
+        $("fbOpen" + side).onclick = (ev) => { ev.stopPropagation(); fbOpenLocal(side); };
+        $("fbUp" + side).onclick = async (ev) => {
+          ev.stopPropagation(); fbSetActive(side);
+          if (FB[side].type === "server") { if (FB[side].parent) fbLoadServer(side, FB[side].parent); }
+          else if (FB[side].stack.length > 1) { FB[side].stack.pop(); await fbLoadLocal(side); }
+        };
+        $("fbRefresh" + side).onclick = (ev) => { ev.stopPropagation(); fbSetActive(side); fbLoad(side); };
         $("fbAll" + side).onclick = (ev) => ev.stopPropagation();
         $("fbAll" + side).onchange = () => fbToggleAll(side);
+        // Restore the last server path this pane visited (survives page reload).
+        try { const p = localStorage.getItem("fb_server_" + side); if (p) FB[side].path = p; } catch (_) {}
         fbLoad(side);
       });
       fbSetActive("L");
     }
 
+    $("fbLocalInput").onchange = () => { if ($("fbLocalInput").files.length) fbLocalFromInput(fbLocalTarget, $("fbLocalInput").files); };
     $("fbOverlay").addEventListener("click", (ev) => { if (ev.target === $("fbOverlay")) fbClosePreview(); });
-    $("fbCopyBtn").onclick = () => fbTransfer("copy");
-    $("fbMoveBtn").onclick = () => fbTransfer("move");
+    $("fbSendBtn").onclick = () => fbTransferDir("L", "R");
+    $("fbRecvBtn").onclick = () => fbTransferDir("R", "L");
     $("fbExtractSelBtn").onclick = () => fbExtract(fbActive, fbSelected(fbActive));
     $("fbDelSelBtn").onclick = () => fbDelete(fbActive, fbSelected(fbActive));
     $("fbMkdirBtn").onclick = async () => {
       const side = fbActive;
       const name = (prompt(`${side} 패널에 새 폴더 이름:`) || "").trim();
       if (!name) return;
+      if (FB[side].type === "local") {
+        const dir = fbCurLocalDir(side); if (!dir) { fbSetStatus("로컬 폴더를 먼저 여세요."); return; }
+        try { await dir.getDirectoryHandle(name, { create: true }); fbSetStatus(`로컬 폴더 생성: ${name}`); fbLoadLocal(side); }
+        catch (e) { fbSetStatus("생성 실패: " + e.message); }
+        return;
+      }
       const fd = new FormData(); fd.append("parent", FB[side].path || ""); fd.append("name", name);
       const r = await (await fetch("/api/fs/mkdir", { method: "POST", body: fd })).json();
       if (r.error) { fbSetStatus("생성 실패: " + r.error); return; }
-      fbSetStatus(`폴더 생성: ${name}`); fbLoad(side, FB[side].path);
+      fbSetStatus(`폴더 생성: ${name}`); fbLoadServer(side, FB[side].path);
     };
-    $("fbUploadBtn").onclick = () => $("fbFiles").click();
-    $("fbFiles").onchange = async () => {
-      const side = fbActive, fl = $("fbFiles").files;
-      if (!fl.length) return;
-      const fd = new FormData(); fd.append("path", FB[side].path || "");
-      Array.from(fl).forEach((x) => fd.append("files", x, x.name));
-      fbSetStatus(`${side} 패널에 업로드 중…`);
-      const r = await (await fetch("/api/upload_to_server", { method: "POST", body: fd })).json();
-      if (r.error) { fbSetStatus("업로드 실패: " + r.error); return; }
-      $("fbFiles").value = ""; fbSetStatus(`업로드 ${r.saved}개 완료`); fbLoad(side, FB[side].path);
+    // Open a new local folder into the active pane (switching it to 로컬 if needed).
+    $("fbOpenLocalBtn").onclick = () => {
+      const side = fbActive;
+      if (FB[side].type !== "local") {
+        FB[side].type = "local";
+        $("fbType" + side).querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.v === "local"));
+        $("fbOpen" + side).style.display = "";
+      }
+      fbOpenLocal(side);
     };
-    $("trBrowseBtn").onclick = () => {
+        $("trBrowseBtn").onclick = () => {
       if ($("trBrowser").style.display === "block") { $("trBrowser").style.display = "none"; return; }
       openBrowse($("trImages").value.trim() || "", "trImages", "trBrowser");
+    };
+    // When an images folder is picked/typed, auto-fill the annotations path with a
+    // .json found inside it (prefer an egopath*.json).
+    $("trImages").onchange = async () => {
+      const folder = $("trImages").value.trim();
+      if (!folder) return;
+      try {
+        const d = await (await fetch("/api/browse?path=" + encodeURIComponent(folder))).json();
+        if (!d.ok || !d.files) return;
+        const jsons = d.files.filter((f) => /\.json$/i.test(f.name));
+        if (!jsons.length) {
+          $("trDataInfo").textContent = "이 폴더에 주석 JSON이 없습니다. 경로를 직접 입력하세요.";
+          return;
+        }
+        const pick = jsons.find((f) => /egopath.*\.json$/i.test(f.name)) || jsons[0];
+        $("trAnnots").value = pick.path;
+        $("trDataInfo").textContent = `주석 JSON 자동 선택: ${pick.name}`;
+      } catch (_) { /* ignore — user can type the path manually */ }
     };
 
     // ----- Labeling -----
@@ -2024,10 +1912,36 @@
         loadLabelImage(0);
       } catch (e) { $("lblStatus").textContent = "Error: " + e.message; }
     }
-    // Picking a folder via Browse fills lblFolder and fires onchange → auto-load.
-    // Also re-list when the annotations path changes (refreshes labeled marks).
-    $("lblFolder").onchange = loadLabelList;
+    // Picking/typing an images folder auto-reflects the annotations path to that
+    // folder (an existing egopath*.json there, else <folder>/egopath_labels.json).
+    async function lblFolderChanged() {
+      const folder = $("lblFolder").value.trim();
+      if (!folder) { $("lblStatus").textContent = "Set an images folder (Browse…)."; return; }
+      const base = folder.replace(/\/+$/, "");
+      let annots = base + "/egopath_labels.json";
+      try {
+        const d = await (await fetch("/api/browse?path=" + encodeURIComponent(folder))).json();
+        if (d.ok && d.files) {
+          const jsons = d.files.filter((f) => /\.json$/i.test(f.name));
+          const pick = jsons.find((f) => /egopath.*\.json$/i.test(f.name)) || jsons[0];
+          if (pick) annots = pick.path;
+        }
+      } catch (_) { /* fall back to the default path */ }
+      $("lblAnnots").value = annots;
+      loadLabelList();
+    }
+    $("lblFolder").onchange = lblFolderChanged;
+    // Re-list when the annotations path changes (refreshes labeled marks).
     $("lblAnnots").onchange = () => { if ($("lblFolder").value.trim()) loadLabelList(); };
+
+    // Long server paths: on focus scroll to the start so the whole path reads from
+    // the beginning, and mirror the value into the title so hover shows it in full.
+    ["lblFolder", "lblAnnots", "trImages", "trAnnots"].forEach((id) => {
+      const el = $(id); if (!el) return;
+      const sync = () => { el.title = el.value; };
+      el.addEventListener("input", sync);
+      el.addEventListener("focus", () => { sync(); requestAnimationFrame(() => { el.scrollLeft = 0; }); });
+    });
 
     function renderImgList() {
       const el = $("lblList"); el.innerHTML = "";
@@ -2278,45 +2192,6 @@
         }
       } catch (e) { $("lblStatus").textContent = "Error: " + e.message; }
       finally { $("lblDetectBtn").disabled = false; }
-    };
-
-    // Fill all frames by interpolating between manually-labeled keyframes.
-    $("lblInterpBtn").onclick = async () => {
-      if (lbl.idx >= 0) await saveLabel();  // save current edits as a keyframe first
-      $("lblStatus").textContent = "Interpolating…";
-      const fd = new FormData();
-      fd.append("folder", $("lblFolder").value.trim());
-      fd.append("annots", $("lblAnnots").value.trim());
-      try {
-        const res = await fetch("/api/label/interpolate", { method: "POST", body: fd });
-        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }
-        const reader = res.body.getReader(); const dec = new TextDecoder();
-        let buf = "", li = 0;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-          let idx;
-          while ((idx = buf.indexOf("\n\n", li)) >= 0) {
-            const chunk = buf.slice(li, idx).trim(); li = idx + 2;
-            if (!chunk.startsWith("data:")) continue;
-            let m; try { m = JSON.parse(chunk.slice(5).trim()); } catch (_) { continue; }
-            if (m.type === "status") { $("lblStatus").textContent = m.message; }
-            else if (m.type === "progress") {
-              $("lblProgBar").style.width = Math.round((m.index / m.total) * 100) + "%";
-              $("lblStatus").textContent = `Interpolating ${m.index}/${m.total}…`;
-            } else if (m.type === "done") {
-              lbl.images.forEach((im) => im.labeled = true);
-              renderImgList();
-              $("lblCount").textContent = `(${lbl.images.length}, labeled ${m.labeled_total})`;
-              $("lblStatus").textContent = `Interpolated ${m.count} frames ✓ — review & add keyframes where it's off.`;
-              $("lblProgBar").style.width = "0%";
-              if (lbl.idx >= 0) loadLabelImage(lbl.idx);
-            } else if (m.type === "error") { $("lblStatus").textContent = "Error: " + m.error; }
-          }
-          buf = buf.slice(li); li = 0;
-        }
-      } catch (e) { $("lblStatus").textContent = "Error: " + e.message; }
     };
 
     // ----- Training -----
