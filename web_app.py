@@ -947,6 +947,185 @@ _FB_TEXT_EXT = {
     ".tsv", ".log", ".sql", ".env", ".gitignore", ".dockerfile", ".m", ".lua",
 }
 _FB_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico"}
+_FB_TABLE_MAX_ROWS = 300   # cap rows shown per sheet in the preview
+_FB_TABLE_MAX_COLS = 40     # cap columns shown per sheet
+
+
+def _fb_sheets_xlsx(src):
+    """Rows of every sheet in a .xlsx/.xlsm workbook (capped for preview)."""
+    import openpyxl
+    wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
+    sheets = []
+    try:
+        for ws in wb.worksheets:
+            rows = []
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                if i >= _FB_TABLE_MAX_ROWS:
+                    break
+                rows.append(["" if c is None else str(c) for c in row[:_FB_TABLE_MAX_COLS]])
+            sheets.append({"name": ws.title, "rows": rows,
+                           "truncated": bool(ws.max_row and ws.max_row > _FB_TABLE_MAX_ROWS)})
+    finally:
+        wb.close()
+    return sheets
+
+
+def _fb_sheets_xls(src):
+    """Rows of every sheet in a legacy .xls workbook (capped for preview)."""
+    import xlrd
+    book = xlrd.open_workbook(src)
+    sheets = []
+    for sh in book.sheets():
+        rows = []
+        for r in range(min(sh.nrows, _FB_TABLE_MAX_ROWS)):
+            rows.append([str(sh.cell_value(r, c)) for c in range(min(sh.ncols, _FB_TABLE_MAX_COLS))])
+        sheets.append({"name": sh.name, "rows": rows,
+                       "truncated": sh.nrows > _FB_TABLE_MAX_ROWS})
+    return sheets
+
+
+def _fb_text_hwpx(src):
+    """Plain text from a .hwpx (OWPML zip): join <hp:t> runs per <hp:p>."""
+    import re
+    import zipfile
+    from xml.etree import ElementTree as ET
+    paras = []
+    with zipfile.ZipFile(src) as z:
+        names = sorted(n for n in z.namelist() if re.match(r"Contents/section\d+\.xml$", n))
+        for n in names:
+            root = ET.fromstring(z.read(n))
+            for p in root.iter():
+                if p.tag.rsplit("}", 1)[-1] != "p":
+                    continue
+                txt = "".join(t.text or "" for t in p.iter()
+                              if t.tag.rsplit("}", 1)[-1] == "t")
+                paras.append(txt)
+    return "\n".join(paras).strip() or "(텍스트 없음)"
+
+
+def _fb_text_docx(src):
+    """Plain text from a .docx: join <w:t> runs per <w:p>."""
+    import zipfile
+    from xml.etree import ElementTree as ET
+    W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    with zipfile.ZipFile(src) as z:
+        root = ET.fromstring(z.read("word/document.xml"))
+    paras = ["".join(t.text or "" for t in p.iter(W + "t")) for p in root.iter(W + "p")]
+    return "\n".join(paras).strip() or "(텍스트 없음)"
+
+
+# HWP5 PARA_TEXT control chars that occupy a single wchar (others span 8 wchars).
+_HWP_CHAR_CTRL = {0, 10, 13, 24, 25, 26, 27, 28, 29, 30, 31}
+
+
+def _fb_hwp_para_text(payload):
+    """Decode one HWPTAG_PARA_TEXT record (UTF-16LE with inline control chars)."""
+    import struct
+    out, i, n = [], 0, len(payload) - (len(payload) % 2)
+    while i < n:
+        c = struct.unpack_from("<H", payload, i)[0]
+        if c in _HWP_CHAR_CTRL:
+            if c in (10, 13):
+                out.append("\n")
+            i += 2
+        elif 1 <= c <= 31:
+            i += 16  # extended/inline control spans 8 wchars
+        else:
+            out.append(chr(c)); i += 2
+    return "".join(out)
+
+
+def _fb_hwp_to_html(src):
+    """Convert a binary HWP 5.0 file to a self-contained HTML string via hwp5html
+    (pyhwp): the stylesheet is inlined and every bindata image becomes a data URI,
+    so the result renders standalone in an <iframe> with the real page layout."""
+    import base64
+    import glob
+    import mimetypes
+    import shutil
+    import subprocess
+    import tempfile
+
+    hwp5html = os.path.join(os.path.dirname(sys.executable), "hwp5html")
+    tmp = tempfile.mkdtemp(prefix="hwp5_")
+    try:
+        subprocess.run([hwp5html, "--output", tmp, src],
+                       check=True, capture_output=True, timeout=120)
+        with open(os.path.join(tmp, "index.xhtml"), encoding="utf-8") as f:
+            html = f.read()
+        css_path = os.path.join(tmp, "styles.css")
+        if os.path.exists(css_path):
+            with open(css_path, encoding="utf-8") as f:
+                html = html.replace(
+                    '<link rel="stylesheet" href="styles.css" type="text/css" />',
+                    "<style>%s</style>" % f.read())
+        for asset in glob.glob(os.path.join(tmp, "bindata", "*")):
+            name = os.path.basename(asset)
+            mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            with open(asset, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            html = html.replace("bindata/%s" % name, "data:%s;base64,%s" % (mime, b64))
+        return html
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _fb_hwp_memos(src):
+    """Extract memo (메모) texts from a binary HWP 5.0 file via hwp5proc's XML
+    model: each populated <MemoList> holds one memo's paragraphs. Returns a list
+    of memo strings (empty when the document has no memos)."""
+    import io
+    import subprocess
+    from xml.etree import ElementTree as ET
+
+    hwp5proc = os.path.join(os.path.dirname(sys.executable), "hwp5proc")
+    xml = subprocess.run([hwp5proc, "xml", src],
+                         check=True, capture_output=True, timeout=120).stdout
+    memos = []
+    for _ev, el in ET.iterparse(io.BytesIO(xml), events=("end",)):
+        if el.tag == "MemoList":
+            txt = "".join(el.itertext()).strip()
+            if txt:
+                memos.append(txt)
+            el.clear()
+    return memos
+
+
+def _fb_text_hwp(src):
+    """Plain text from a binary HWP 5.0 file (OLE compound) — best effort."""
+    import struct
+    import zlib
+    import olefile
+    if not olefile.isOleFile(src):
+        return "(HWP 5.0 형식이 아닙니다. 다운로드해서 여세요.)"
+    ole = olefile.OleFileIO(src)
+    try:
+        compressed = True
+        if ole.exists("FileHeader"):
+            hdr = ole.openstream("FileHeader").read()
+            if len(hdr) > 36:
+                compressed = bool(hdr[36] & 1)
+        sects = sorted(
+            (e for e in ole.listdir()
+             if len(e) == 2 and e[0] == "BodyText" and e[1].startswith("Section")),
+            key=lambda e: int(e[1][7:] or 0))
+        chunks = []
+        for entry in sects:
+            data = ole.openstream(entry).read()
+            if compressed:
+                data = zlib.decompress(data, -15)
+            i, n = 0, len(data)
+            while i + 4 <= n:
+                h = struct.unpack_from("<I", data, i)[0]; i += 4
+                tag, size = h & 0x3FF, (h >> 20) & 0xFFF
+                if size == 0xFFF:
+                    size = struct.unpack_from("<I", data, i)[0]; i += 4
+                payload = data[i:i + size]; i += size
+                if tag == 67:  # HWPTAG_PARA_TEXT
+                    chunks.append(_fb_hwp_para_text(payload))
+        return "\n".join(c for c in chunks if c).strip() or "(텍스트 없음)"
+    finally:
+        ole.close()
 
 
 def _fb_archive_kind(name):
@@ -1408,6 +1587,23 @@ def api_fs_preview():
     ext = os.path.splitext(src)[1].lower()
     if ext in _FB_IMAGE_EXT:
         return send_file(src)
+    if ext == ".pdf":
+        return send_file(src)  # inline — the browser renders it in an <iframe>
+    # Office / Hangul documents: spreadsheets render as tables, docs as text.
+    try:
+        if ext in (".xlsx", ".xlsm"):
+            return jsonify({"ok": True, "type": "table", "sheets": _fb_sheets_xlsx(src)})
+        if ext == ".xls":
+            return jsonify({"ok": True, "type": "table", "sheets": _fb_sheets_xls(src)})
+        if ext == ".hwpx":
+            return jsonify({"ok": True, "type": "text", "text": _fb_text_hwpx(src)})
+        if ext == ".hwp":
+            return jsonify({"ok": True, "type": "text", "text": _fb_text_hwp(src)})
+        if ext == ".docx":
+            return jsonify({"ok": True, "type": "text", "text": _fb_text_docx(src)})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": True, "type": "text",
+                        "text": f"(미리보기 실패: {type(e).__name__}: {e})"})
     size = os.path.getsize(src)
     if size > _FB_TEXT_MAX:
         return jsonify({"ok": True, "type": "text",
@@ -1429,6 +1625,54 @@ def api_fs_download():
         return jsonify({"error": "File not found in data root."}), 400
     return send_file(src, as_attachment=True,
                      download_name=os.path.basename(src))
+
+
+@app.route("/api/fs/hwp_html")
+def api_fs_hwp_html():
+    """Render a binary .hwp as full-layout HTML (hwp5html) for the preview iframe.
+    Cached on disk per (path, mtime); falls back to text extraction on failure."""
+    import hashlib
+    import html as _html
+    import tempfile
+
+    src = _under_data_root(request.args.get("path"))
+    if src is None or not os.path.isfile(src):
+        return "File not found", 404
+
+    cache_dir = os.path.join(tempfile.gettempdir(), "tepnet_hwp_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    key = hashlib.sha1(f"{os.path.realpath(src)}:{os.path.getmtime(src)}".encode()).hexdigest()
+    cached = os.path.join(cache_dir, key + ".html")
+    if os.path.exists(cached):
+        return send_file(cached, mimetype="text/html")
+
+    try:
+        html = _fb_hwp_to_html(src)
+    except Exception as e:  # noqa: BLE001 — fall back to text so the user still sees content
+        try:
+            txt = _fb_text_hwp(src)
+        except Exception:  # noqa: BLE001
+            txt = "(미리보기 실패)"
+        html = ("<!doctype html><meta charset=utf-8>"
+                "<div style='padding:12px;color:#b00;font-family:sans-serif'>"
+                f"레이아웃 변환 실패 — 텍스트로 표시합니다 ({_html.escape(str(e))})</div>"
+                "<pre style='white-space:pre-wrap;word-break:break-all;"
+                f"font-size:13px;padding:12px'>{_html.escape(txt)}</pre>")
+    with open(cached, "w", encoding="utf-8") as f:
+        f.write(html)
+    return send_file(cached, mimetype="text/html")
+
+
+@app.route("/api/fs/hwp_memos")
+def api_fs_hwp_memos():
+    """Return the memo (메모) texts of a binary .hwp for the preview's memo toggle."""
+    src = _under_data_root(request.args.get("path"))
+    if src is None or not os.path.isfile(src):
+        return jsonify({"ok": False, "error": "File not found in data root."}), 400
+    try:
+        return jsonify({"ok": True, "memos": _fb_hwp_memos(src)})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/upload_dirs")

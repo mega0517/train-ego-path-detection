@@ -20,6 +20,11 @@ Flask
 av  # PyAV fallback decoder for codecs OpenCV can't read (e.g. H.265/HEVC)
 py7zr  # 7z extraction in the File Browser tab (zip/tar/gz/bz2/xz are stdlib)
 rarfile  # rar extraction; needs an unrar binary (bundled at ./bin/unrar)
+openpyxl  # .xlsx/.xlsm preview (File Browser); .hwpx/.docx use stdlib zip+xml
+xlrd  # legacy .xls preview
+olefile  # binary .hwp (HWP 5.0) text fallback
+pyhwp  # binary .hwp → full-layout HTML preview (hwp5html)
+six  # runtime dependency of pyhwp
 
 # requirements for TensorRT usage
 onnx
