@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>TEP-Net Train Ego-Path Detection</title>
   <style>
     :root {
@@ -31,7 +31,7 @@
     header {
       background: #1b262c;
       color: #fff;
-      padding: 10px 18px;
+      padding: max(10px, env(safe-area-inset-top)) 18px 10px;
       font-size: 16px;
       font-weight: 600;
       display: flex;
@@ -90,6 +90,7 @@
     .fb2-pathbar .btn { width: auto; margin-top: 0; padding: 3px 8px; background: #607d8b; }
     .fb2-list { flex: 1; min-height: 0; overflow-y: auto; }
     .fb2-list .img-item { gap: 6px; }
+    .fb2-hint { font-size: 12px; color: var(--muted); padding: 8px; }
     .fb2-pane .cnt { font-size: 11px; color: var(--muted); padding: 4px 8px;
                      border-top: 1px solid var(--border); background: #fafbfc; }
     #fbOverlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 50;
@@ -97,11 +98,31 @@
     #fbOverlay .box { background: var(--panel); border-radius: 10px; width: 80%; height: 82%;
                       display: flex; flex-direction: column; overflow: hidden; }
     #fbOverlay .head { display: flex; justify-content: space-between; align-items: center;
-                       padding: 10px 14px; border-bottom: 1px solid var(--border); }
-    #fbOverlay .body { flex: 1; overflow: auto; padding: 12px; }
+                       gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+    #fbOverlay .fb-zoom { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+    #fbOverlay .fb-zoom .btn { width: 30px; margin: 0; padding: 3px 0; background: #607d8b;
+                               font-size: 15px; line-height: 1; }
+    #fbOverlay .fb-zoom #fbZoomPct { min-width: 46px; text-align: center; font-size: 12px;
+                                     color: var(--muted); cursor: pointer; user-select: none; }
+    #fbOverlay .body { flex: 1; overflow: auto; padding: 12px; touch-action: pan-x pan-y; }
     #fbOverlay img { max-width: 100%; display: block; margin: 0 auto; }
     #fbOverlay pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; margin: 0;
                      font-family: ui-monospace, monospace; }
+    #fbOverlay table.fb-xls { border-collapse: collapse; font-size: 12px; margin-bottom: 6px; }
+    #fbOverlay table.fb-xls th, #fbOverlay table.fb-xls td {
+      border: 1px solid var(--border); padding: 3px 8px; white-space: nowrap;
+      max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+    #fbOverlay table.fb-xls th { background: var(--bg); position: sticky; top: 0; font-weight: 600; }
+    #fbOverlay .fb-frame { width: 100%; height: 100%; min-height: 70vh; border: 0; background: #fff; }
+    #fbOverlay .hwp-wrap { display: flex; flex-direction: column; height: 100%; }
+    #fbOverlay .hwp-bar { display: flex; align-items: center; padding: 0 0 8px; flex-shrink: 0; }
+    #fbOverlay .hwp-main { flex: 1; display: flex; min-height: 0; }
+    #fbOverlay .hwp-main .fb-frame { flex: 1; min-height: 0; }
+    #fbOverlay .hwp-memos { width: 280px; flex-shrink: 0; overflow: auto; padding: 8px;
+                            border-left: 1px solid var(--border); background: var(--bg); font-size: 13px; }
+    #fbOverlay .hwp-memo-item { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+                                margin-bottom: 6px; background: var(--panel); }
+    #fbOverlay .hwp-memo-item .mtext { margin-top: 3px; white-space: pre-wrap; word-break: break-word; }
     .rail-btns { display: flex; gap: 6px; }
     .rail-btns .btn { margin-top: 0; }
     .rail-btns .btn.lon { background: #e53935; }
@@ -259,6 +280,46 @@
       .sidebar { width: 100%; overflow-y: visible; }
       .preview-col { min-height: 60vh; }
     }
+    @media (max-width: 480px) {
+      /* Phone layout (iPhone 16 Pro ≈ 402pt): single column, touch-friendly,
+         with Dynamic-Island / home-indicator safe areas. */
+      header {
+        padding: calc(6px + env(safe-area-inset-top)) 12px 8px;
+        font-size: 15px; gap: 8px; flex-wrap: wrap;
+      }
+      header .brand { width: 100%; }
+      header .krri-logo { height: 22px; }
+      header .status { display: none; }
+      header .tabs {
+        margin-left: 0; width: 100%; gap: 4px; padding-bottom: 2px;
+        overflow-x: auto; -webkit-overflow-scrolling: touch;
+      }
+      header .tab { flex: 0 0 auto; white-space: nowrap; font-size: 13px; padding: 8px 11px; }
+
+      .layout {
+        padding: 10px max(10px, env(safe-area-inset-right))
+                 calc(12px + env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+        gap: 10px;
+      }
+      .sidebar { grid-template-columns: 1fr; }   /* stack all controls */
+      .grid2 { grid-template-columns: 1fr; }      /* stack paired inputs */
+
+      /* Larger touch targets; 16px inputs stop iOS from auto-zooming on focus. */
+      .btn { padding: 12px; font-size: 15px; }
+      input[type=text], input[type=number], select, input[type=file], textarea { font-size: 16px; }
+      .rail-btns { flex-wrap: wrap; }
+
+      .preview-col { min-height: 44vh; }          /* usable image height on a phone */
+      .results-strip { height: 84px; }
+
+      /* File Browser / Upload: stack the two panes vertically. */
+      .fb2-panes { flex-direction: column; }
+      .fb2-pane { min-height: 46vh; }
+      .fb2-actions { gap: 5px; }
+      .fb2-actions .btn { padding: 10px 12px; font-size: 13px; }
+
+      .browser { max-height: 45vh; }
+    }
   </style>
 </head>
 <body>
@@ -299,7 +360,7 @@
           <button class="btn" id="upRefreshL">🔄</button>
           <span class="pth" id="upPathL">🖥 로컬: 폴더를 열어주세요</span>
         </div>
-        <div class="fb2-list" id="upListL">📂 ‘로컬 폴더 열기’를 눌러 시작하세요.</div>
+        <div class="fb2-list" id="upListL"><div class="fb2-hint">📂 ‘로컬 폴더 열기’를 눌러 시작하세요.</div></div>
         <div class="cnt" id="upCntL"></div>
       </div>
       <div class="fb2-pane" id="upPaneR" data-side="R">
@@ -355,7 +416,13 @@
   <div id="fbOverlay">
     <div class="box">
       <div class="head">
-        <b id="fbPreviewTitle" style="font-size:13px; word-break:break-all;"></b>
+        <b id="fbPreviewTitle" style="font-size:13px; word-break:break-all; flex:1;"></b>
+        <div class="fb-zoom" id="fbZoomBar">
+          <button class="btn" id="fbZoomOut" title="축소 (Ctrl+휠 / −)">−</button>
+          <span id="fbZoomPct" title="클릭: 100%로 초기화">100%</span>
+          <button class="btn" id="fbZoomIn" title="확대 (Ctrl+휠 / +)">+</button>
+          <button class="btn" id="fbZoomReset" title="원본 크기">⟲</button>
+        </div>
         <button class="btn" style="width:auto; margin:0; padding:3px 10px; background:#90a4ae;" onclick="fbClosePreview()">✕ 닫기</button>
       </div>
       <div class="body" id="fbPreviewBody"></div>
@@ -1194,7 +1261,7 @@
     }
     async function upLoadLocal() {
       const dir = upCurLocalDir();
-      if (!dir) { $("upListL").textContent = "📂 ‘로컬 폴더 열기’를 눌러 시작하세요."; return; }
+      if (!dir) { $("upListL").innerHTML = "<div class='fb2-hint'>📂 ‘로컬 폴더 열기’를 눌러 시작하세요.</div>"; return; }
       const entries = [];
       for await (const [name, handle] of dir.entries()) {
         const isDir = handle.kind === "directory";
@@ -1740,19 +1807,136 @@
     async function fbPreview(e) {
       $("fbOverlay").style.display = "flex";
       $("fbPreviewTitle").textContent = e.name;
+      fbSetZoom(1);   // each preview opens at 100%
       const body = $("fbPreviewBody");
       if (FB_IMG_RE.test(e.name)) {
         body.innerHTML = `<img src="/api/fs/preview?path=${encodeURIComponent(e.path)}">`;
         return;
       }
+      if (/\.pdf$/i.test(e.name)) {
+        body.innerHTML = `<iframe class="fb-frame" src="/api/fs/preview?path=${encodeURIComponent(e.path)}"></iframe>`;
+        return;
+      }
+      // Binary HWP 5.0: full-layout HTML rendered server-side (hwp5html),
+      // with a toggle to show/hide the document's memos (메모).
+      if (/\.hwp$/i.test(e.name)) {
+        const pth = encodeURIComponent(e.path);
+        body.innerHTML =
+          `<div class="hwp-wrap">
+             <div class="hwp-bar">
+               <label style="font-size:13px;cursor:pointer;"><input type="checkbox" id="hwpMemoToggle" style="vertical-align:middle;margin-right:4px;">메모 보기</label>
+               <span class="info" id="hwpMemoInfo" style="margin:0 0 0 10px;"></span>
+             </div>
+             <div class="hwp-main">
+               <iframe class="fb-frame" src="/api/fs/hwp_html?path=${pth}"></iframe>
+               <div class="hwp-memos" id="hwpMemoPanel" style="display:none;"></div>
+             </div>
+           </div>`;
+        const hwpIfr = body.querySelector("iframe.fb-frame");
+        if (hwpIfr) hwpIfr.addEventListener("load", () => {
+          try {
+            fbAttachPinch(hwpIfr.contentDocument);
+            if (hwpIfr.contentDocument.body) hwpIfr.contentDocument.body.style.touchAction = "pan-x pan-y";
+          } catch (_) { /* cross-origin/unavailable — native gestures apply */ }
+        });
+        let loaded = false;
+        const panel = $("hwpMemoPanel"), info = $("hwpMemoInfo");
+        $("hwpMemoToggle").onchange = async (ev) => {
+          const on = ev.target.checked;
+          panel.style.display = on ? "block" : "none";
+          if (on && !loaded) {
+            info.textContent = "메모 불러오는 중…";
+            try {
+              const r = await (await fetch("/api/fs/hwp_memos?path=" + pth)).json();
+              const memos = (r && r.memos) || [];
+              loaded = true;
+              if (!memos.length) {
+                panel.innerHTML = "<div class='info'>이 문서에는 메모가 없습니다.</div>";
+                info.textContent = "메모 없음";
+              } else {
+                panel.innerHTML = memos.map((_, i) =>
+                  `<div class="hwp-memo-item"><b>메모 ${i + 1}</b><div class="mtext"></div></div>`).join("");
+                [...panel.querySelectorAll(".hwp-memo-item .mtext")].forEach((d, i) => { d.textContent = memos[i]; });
+                info.textContent = `메모 ${memos.length}개`;
+              }
+            } catch (err) {
+              panel.innerHTML = "<div class='info'>메모 로드 실패: " + err.message + "</div>";
+              info.textContent = "";
+            }
+          }
+        };
+        return;
+      }
       body.innerHTML = "<div class='info'>불러오는 중…</div>";
       try {
         const j = await (await fetch("/api/fs/preview?path=" + encodeURIComponent(e.path))).json();
+        if (j.type === "table") {
+          body.innerHTML = "";
+          const sheets = j.sheets || [];
+          if (!sheets.length) { body.innerHTML = "<div class='info'>(빈 문서)</div>"; return; }
+          sheets.forEach((sh) => {
+            if (sheets.length > 1) {
+              const h = document.createElement("h4");
+              h.textContent = "📄 " + sh.name; h.style.cssText = "margin:10px 0 4px;font-size:13px;";
+              body.appendChild(h);
+            }
+            const tbl = document.createElement("table"); tbl.className = "fb-xls";
+            (sh.rows || []).forEach((r, ri) => {
+              const tr = document.createElement("tr");
+              r.forEach((c) => {
+                const cell = document.createElement(ri === 0 ? "th" : "td");
+                cell.textContent = c; tr.appendChild(cell);
+              });
+              tbl.appendChild(tr);
+            });
+            body.appendChild(tbl);
+            if (sh.truncated) {
+              const p = document.createElement("div"); p.className = "info";
+              p.textContent = `(상위 ${(sh.rows || []).length}행만 표시)`; body.appendChild(p);
+            }
+          });
+          return;
+        }
         const pre = document.createElement("pre"); pre.textContent = j.text || "";
         body.innerHTML = ""; body.appendChild(pre);
       } catch (err) { body.innerHTML = "<div class='info'>미리보기 실패: " + err.message + "</div>"; }
     }
     function fbClosePreview() { $("fbOverlay").style.display = "none"; }
+
+    // Preview zoom (applies uniformly to images, PDF/HWP iframes, tables, text).
+    let fbZoom = 1;
+    function fbApplyZoom() {
+      $("fbPreviewBody").style.zoom = fbZoom;
+      $("fbZoomPct").textContent = Math.round(fbZoom * 100) + "%";
+    }
+    function fbSetZoom(z) {
+      fbZoom = Math.max(0.25, Math.min(4, Math.round(z * 100) / 100));
+      fbApplyZoom();
+    }
+    $("fbZoomIn").onclick = () => fbSetZoom(fbZoom + 0.1);
+    $("fbZoomOut").onclick = () => fbSetZoom(fbZoom - 0.1);
+    $("fbZoomReset").onclick = () => fbSetZoom(1);
+    $("fbZoomPct").onclick = () => fbSetZoom(1);
+    $("fbPreviewBody").addEventListener("wheel", (ev) => {
+      if (!ev.ctrlKey) return;           // Ctrl + wheel zooms, plain wheel scrolls
+      ev.preventDefault();
+      fbSetZoom(fbZoom + (ev.deltaY < 0 ? 0.1 : -0.1));
+    }, { passive: false });
+
+    // Two-finger pinch to zoom. Attach to the preview body (images/tables/text)
+    // and, for same-origin iframes (HWP), to the iframe document too.
+    function fbAttachPinch(target) {
+      const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+      let d0 = 0, z0 = 1;
+      target.addEventListener("touchstart", (ev) => {
+        if (ev.touches.length === 2) { d0 = dist(ev.touches); z0 = fbZoom; ev.preventDefault(); }
+      }, { passive: false });
+      target.addEventListener("touchmove", (ev) => {
+        if (ev.touches.length === 2 && d0 > 0) { ev.preventDefault(); fbSetZoom(z0 * (dist(ev.touches) / d0)); }
+      }, { passive: false });
+      target.addEventListener("touchend", () => { d0 = 0; }, { passive: true });
+    }
+    fbAttachPinch($("fbPreviewBody"));
 
     function fbRefreshBoth() { fbLoad("L", FB.L.path); fbLoad("R", FB.R.path); }
     function fbInit() {
