@@ -26,6 +26,9 @@ olefile  # binary .hwp (HWP 5.0) text fallback
 pyhwp  # binary .hwp → full-layout HTML preview (hwp5html)
 six  # runtime dependency of pyhwp
 sam2  # SAM2 video auto-labeling (checkpoint fetched into ./bin/sam2, gitignored)
+imageio-ffmpeg  # bundled static ffmpeg for recorder WebM→MP4 conversion
+python-hwpx  # HWPX(한글) document generation (paper artifacts)
+python-pptx  # PPT generation (paper summary deck)
 
 # requirements for TensorRT usage
 onnx

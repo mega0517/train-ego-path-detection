@@ -439,6 +439,70 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/recorder")
+def recorder():
+    """Bandicam-style screen/window recorder (browser getDisplayMedia)."""
+    return render_template("recorder.html")
+
+
+def _ffmpeg_exe():
+    """Static ffmpeg from imageio-ffmpeg, falling back to one on PATH."""
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001
+        import shutil
+        return shutil.which("ffmpeg")
+
+
+@app.route("/api/recorder/save", methods=["POST"])
+def api_recorder_save():
+    """Save a browser recording into datasets/Recordings, optionally transcoding
+    the WebM to MP4 (H.264 + AAC, faststart) with the bundled ffmpeg."""
+    import re
+    import subprocess
+
+    up = request.files.get("file")
+    if up is None or not up.filename:
+        return jsonify({"error": "No recording provided."}), 400
+    convert = request.form.get("convert") == "true"
+    name = os.path.basename((request.form.get("name") or up.filename).strip())
+    name = re.sub(r"[^\w.\-가-힣 ]", "_", name) or "recording.webm"
+
+    dest = os.path.join(os.path.realpath(_UPLOAD_ROOT), "Recordings")
+    os.makedirs(dest, exist_ok=True)
+    stem, ext = os.path.splitext(name)
+    webm_path = os.path.join(dest, stem + (ext if ext else ".webm"))
+    up.save(webm_path)
+
+    if not convert:
+        return jsonify({"ok": True, "saved": webm_path})
+
+    ff = _ffmpeg_exe()
+    if not ff:
+        return jsonify({"ok": True, "saved": webm_path,
+                        "warn": "ffmpeg가 없어 MP4 변환을 건너뛰었습니다."})
+    mp4_path = os.path.join(dest, stem + ".mp4")
+    cmd = [ff, "-y", "-i", webm_path,
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+           "-pix_fmt", "yuv420p",
+           # H.264 requires even dimensions; browser captures can be odd-sized.
+           "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+           "-c:a", "aac", "-b:a", "160k",
+           "-movflags", "+faststart", mp4_path]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=1800)
+        if r.returncode != 0 or not os.path.exists(mp4_path):
+            detail = r.stderr.decode("utf-8", "replace")[-400:]
+            return jsonify({"ok": True, "saved": webm_path,
+                            "warn": f"MP4 변환 실패 — WebM 원본만 저장됨: {detail}"})
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": True, "saved": webm_path,
+                        "warn": "MP4 변환 시간 초과 — WebM 원본만 저장됨."})
+    os.unlink(webm_path)  # conversion succeeded; keep only the MP4
+    return jsonify({"ok": True, "saved": mp4_path, "mp4": mp4_path})
+
+
 @app.route("/api/info")
 def api_info():
     return jsonify(
