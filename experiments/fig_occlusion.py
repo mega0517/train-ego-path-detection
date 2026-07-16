@@ -59,7 +59,13 @@ def refine(det, window):
         return det.model.refine(seq).cpu().numpy()[0]
 
 
-def draw_rails(g, rails, color, width=7, dash=None):
+from PIL import ImageFont
+
+FONT = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+FONT_B = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+
+
+def draw_rails(g, rails, color, width=9, dash=None):
     for rail in rails:
         pts = [tuple(p) for p in rail]
         if len(pts) < 2:
@@ -74,6 +80,11 @@ def draw_rails(g, rails, color, width=7, dash=None):
 
 past_clean = [base_out(det_occ, im) for im in imgs[:-1]]
 gt = labels[fn]
+W0, H0 = size
+# zoom on the track area so the rails are large and readable
+CROP = (int(W0 * 0.18), int(H0 * 0.28), int(W0 * 0.88), H0)
+titles = {0.0: "(a) 비폐색", 0.3: "(b) 폐색 30% — 폐색 증강 RNN만 좌곡선 유지",
+          0.4: "(c) 폐색 40% — 회복 부분적"}
 panels = []
 for frac in FRACS:
     img_o = occlude(imgs[-1], frac)
@@ -84,21 +95,42 @@ for frac in FRACS:
     rnn_occ = det_occ.pred_to_result(refine(det_occ, window)[None, :], None, size)
     rnn_old = det_old.pred_to_result(refine(det_old, window)[None, :], None, size)
     canvas = img_o.copy(); g = ImageDraw.Draw(canvas)
-    draw_rails(g, [gt["left_rail"], gt["right_rail"]], (255, 220, 0), 5, dash=12)
-    draw_rails(g, single, (230, 40, 40), 7)
-    draw_rails(g, rnn_old, (60, 120, 255), 7)
-    draw_rails(g, rnn_occ, (40, 220, 60), 7)
-    g.rectangle([0, 0, 620, 54], fill=(0, 0, 0))
-    g.text((12, 6), f"occlusion {int(frac*100)}%  |  GT-- yellow  single red  "
-                    f"baseline-RNN blue  occl-RNN green", fill=(255, 255, 255))
-    canvas.thumbnail((1100, 1100))
-    panels.append(canvas)
+    draw_rails(g, [gt["left_rail"], gt["right_rail"]], (255, 220, 0), 7, dash=10)
+    draw_rails(g, single, (235, 45, 45), 11)
+    draw_rails(g, rnn_old, (70, 130, 255), 9)
+    draw_rails(g, rnn_occ, (40, 220, 60), 9)
+    if frac > 0:  # label the occluded input band
+        f28 = ImageFont.truetype(FONT, 46)
+        g.text((CROP[0] + 30, H0 - int(H0 * frac) + 18),
+               "전두부 모사 입력 차폐 구간", font=f28, fill=(180, 180, 180))
+    panel = canvas.crop(CROP)
+    panel.thumbnail((1400, 1400))
+    # title strip above each panel
+    f_t = ImageFont.truetype(FONT_B, 34)
+    strip = Image.new("RGB", (panel.width, 52), (255, 255, 255))
+    ImageDraw.Draw(strip).text((10, 4), titles.get(frac, f"폐색 {int(frac*100)}%"),
+                               font=f_t, fill=(0, 0, 0))
+    panels += [strip, panel]
 
-W = max(p.width for p in panels); H = sum(p.height + 8 for p in panels)
-sheet = Image.new("RGB", (W, H), (20, 20, 20))
+# legend strip
+LEG = [((255, 220, 0), "정답(GT)"), ((235, 45, 45), "단일 프레임"),
+       ((70, 130, 255), "기존 RNN(항등)"), ((40, 220, 60), "폐색 증강 RNN")]
+leg = Image.new("RGB", (panels[1].width, 60), (255, 255, 255))
+g = ImageDraw.Draw(leg)
+f_l = ImageFont.truetype(FONT, 30)
+x = 14
+for color, name in LEG:
+    g.line([(x, 30), (x + 56, 30)], fill=color, width=10)
+    x += 66
+    g.text((x, 10), name, font=f_l, fill=(0, 0, 0))
+    x += g.textlength(name, font=f_l) + 40
+
+panels = [leg] + panels
+W = max(p.width for p in panels); H = sum(p.height + 4 for p in panels)
+sheet = Image.new("RGB", (W, H), (255, 255, 255))
 y = 0
 for p in panels:
-    sheet.paste(p, (0, y)); y += p.height + 8
+    sheet.paste(p, (0, y)); y += p.height + 4
 out = "figures/fig_occlusion_verify.jpg"
-sheet.save(out, quality=90)
-print(f"saved {out} (frame {fn})", flush=True)
+sheet.save(out, quality=92)
+print(f"saved {out} (frame {fn}, {sheet.size})", flush=True)
