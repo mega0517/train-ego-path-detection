@@ -123,12 +123,32 @@ def build(two_col, out_path):
             tbl = doc.add_table(len(rows), len(rows[0]))
             fill_table(doc, tbl, rows)
             doc.add_paragraph("")
-    doc.save_to_path(out_path)
+    # Defensive save: serialize the archive, then write the header entry from the
+    # live in-memory element so run styles added via ensure_run_style can never
+    # be lost to a stale cached header part.
+    import io as _io
+    import zipfile as _zip
+    raw = doc._to_bytes_raw(reset_dirty=False)
+    hdr_xml = doc._root.headers[0].to_bytes()
+    src = _zip.ZipFile(_io.BytesIO(raw))
+    with _zip.ZipFile(out_path, "w", _zip.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            data = hdr_xml if info.filename == "Contents/header.xml" else src.read(info.filename)
+            dst.writestr(info, data)
     print("saved", out_path)
-    # verify: reopen and extract text
+    # verify: every charPr referenced by the body must be defined in the header
+    import re as _re
+    z = _zip.ZipFile(out_path)
+    hdr = z.read("Contents/header.xml").decode("utf-8")
+    sec = z.read("Contents/section0.xml").decode("utf-8")
+    used = set(_re.findall(r'charPrIDRef="(\d+)"', sec))
+    defined = set(_re.findall(r"<hh:charPr\b[^>]*?\bid=\"(\d+)\"", hdr))
+    missing = used - defined
+    assert not missing, f"charPr missing in header: {missing}"
     chk = HwpxDocument.open(out_path)
     txt = chk.export_text()
-    print(f"  reopened OK, {len(txt)} chars, contains 초록: {'국문 초록' in txt}, 표4: {'표 4' in txt}")
+    print(f"  reopened OK, {len(txt)} chars, charPr ok ({sorted(used)}), "
+          f"contains 초록: {'국문 초록' in txt}, 표4: {'표 4' in txt}")
 
 
 build(False, "paper_KCI.hwpx")
