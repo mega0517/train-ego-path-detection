@@ -53,12 +53,12 @@ class GpuPreprocess:
         )
 
     def __call__(self, batch):
-        """Args: (jpegs, boxes (B,T,4), flip (B,), traj (B,2,A), ylim (B,)).
+        """Args: (jpegs, boxes (B,T,4), flip (B,), occl (B,), traj (B,2,A), ylim (B,)).
 
         Returns: seq (B, T, 3, H, W) float in [0, 1] on device, and the targets
         moved to device: (traj (B,2,A), ylim (B,)).
         """
-        jpegs, boxes, flip, traj, ylim = batch
+        jpegs, boxes, flip, occl, traj, ylim = batch
         imgs = _decode_jpegs(jpegs, self.device)  # list of (3, H, W) uint8 on device
 
         boxes = boxes.to(self.device)
@@ -91,5 +91,16 @@ class GpuPreprocess:
         # matching the CPU path that mirrors each cropped frame).
         flip_mask = flip.bool().view(B, 1, 1, 1, 1)
         seq = torch.where(flip_mask, torch.flip(seq, dims=[-1]), seq)
+
+        # bottom-band occlusion of the LAST frame only (target untouched), matching
+        # the CPU path in SequencePathsDataset.__getitem__.
+        occl = occl.to(self.device)
+        if torch.any(occl > 0):
+            from .dataset import SequencePathsDataset
+
+            h = self.out_size[0]
+            for b in torch.nonzero(occl > 0).flatten().tolist():
+                start = int(round(h * (1 - float(occl[b]))))
+                seq[b, -1, :, start:, :] = SequencePathsDataset.OCCLUSION_FILL
 
         return seq, (traj.to(self.device), ylim.to(self.device))

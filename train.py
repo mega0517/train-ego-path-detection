@@ -77,6 +77,18 @@ def parse_arguments():
         help="With --temporal, also fine-tune the base per-frame weights instead of only training the RNN (base is frozen by default).",
     )
     parser.add_argument(
+        "--seq-occlusion",
+        type=float,
+        default=None,
+        help="With --temporal, probability of masking the bottom band of the last frame's input (target kept), forcing the RNN to recover the hidden path from past frames (sets seq_occlusion_prob).",
+    )
+    parser.add_argument(
+        "--run-suffix",
+        type=str,
+        default="",
+        help="With --temporal, suffix appended to the saved run name '<base-model>RNN<suffix>' (e.g. '-occ') so variants do not overwrite each other.",
+    )
+    parser.add_argument(
         "--gpu-preprocess",
         action="store_true",
         help="Offload JPEG decode/crop/resize/jitter/flip to the GPU (temporal training only). Dataloader workers only read raw file bytes, freeing CPU cores.",
@@ -152,6 +164,9 @@ def main(args):
         config["temporal"] = True
         config["base_model"] = args.base_model
         config["freeze_base"] = not args.finetune_base
+
+    if args.temporal and args.seq_occlusion is not None:
+        config["seq_occlusion_prob"] = args.seq_occlusion
 
     # GPU-side preprocessing is only wired for the temporal (sequence) dataset.
     config["gpu_preprocess"] = bool(args.gpu_preprocess) and args.temporal
@@ -350,7 +365,7 @@ def main(args):
     )
     if args.temporal:
         save_path = os.path.join(
-            base_path, "egopathrnn", "weights", f"{args.base_model}RNN"
+            base_path, "egopathrnn", "weights", f"{args.base_model}RNN{args.run_suffix}"
         )
     else:
         run_name = wandb.run.name or wandb.run.id or f"{method}-{args.backbone}"

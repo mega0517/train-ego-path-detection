@@ -30,6 +30,9 @@ rnn_hidden: 256  # hidden size of the temporal GRU (regression/classification)
 rnn_layers: 1  # number of stacked GRU layers
 seg_rnn_hidden: 8  # hidden channels of the ConvGRU (segmentation)
 seq_jitter: 0.05  # crop-box jitter factor for pseudo-sequence synthesis
+seq_occlusion_prob: 0.0  # probability of masking the bottom band of the last frame's input (target kept) — turnout-occlusion augmentation; set via train.py --seq-occlusion
+seq_occlusion_min: 0.1  # minimum occluded fraction of the image height (from the bottom)
+seq_occlusion_max: 0.4  # maximum occluded fraction of the image height (from the bottom)
 
 # paths configuration
 images_path: "/data3/bhkim/datasets/rs19_val/jpgs/rs19_val"  # path to the images directory

@@ -284,6 +284,8 @@ class SequencePathsDataset(PathsDataset):
     consistency for the RNN to learn to track the path over the frames in memory.
     """
 
+    OCCLUSION_FILL = 15 / 255.0  # dark, train-nose-like
+
     def __init__(self, *args, seq_len=10, seq_jitter=0.05, **kwargs):
         super(SequencePathsDataset, self).__init__(*args, **kwargs)
         if self.to_tensor is None:
@@ -293,6 +295,19 @@ class SequencePathsDataset(PathsDataset):
         # When on, workers only read raw JPEG bytes + crop geometry; the pixel
         # pipeline (decode/resize/jitter/flip) runs on the GPU (see gpu_transforms).
         self.gpu_preprocess = bool(self.config.get("gpu_preprocess", False))
+        # Occlusion augmentation: mask the bottom band of the LAST frame's input
+        # while keeping its target intact, so the ground truth under the mask is
+        # only recoverable from the earlier frames. Without it, copying the last
+        # frame's base output (identity refiner) is a global optimum.
+        self.occl_prob = float(self.config.get("seq_occlusion_prob", 0.0))
+        self.occl_min = float(self.config.get("seq_occlusion_min", 0.10))
+        self.occl_max = float(self.config.get("seq_occlusion_max", 0.40))
+
+    def sample_occlusion(self):
+        """Bottom-band occlusion fraction for the current (last) frame, or 0.0."""
+        if self.occl_prob <= 0 or np.random.rand() >= self.occl_prob:
+            return 0.0
+        return float(np.random.uniform(self.occl_min, self.occl_max))
 
     def generate_sequence_boxes(self, current_box, img_w, img_h):
         """Builds `seq_len` (left, top, right) boxes interpolating to the current box."""
@@ -339,6 +354,11 @@ class SequencePathsDataset(PathsDataset):
             frames.append(frame_tensor)
             if i == len(boxes) - 1:
                 last_mask = frame_mask
+        occl = self.sample_occlusion()
+        if occl > 0:
+            h = frames[-1].shape[-2]
+            frames[-1] = frames[-1].clone()
+            frames[-1][..., int(round(h * (1 - occl))):, :] = self.OCCLUSION_FILL
         seq = torch.stack(frames, dim=0)  # (T, C, H, W)
 
         if self.method == "regression":
@@ -395,10 +415,13 @@ class SequencePathsDataset(PathsDataset):
         path_gt, ylim_gt = self.generate_target_regression(last_mask)
 
         jpeg = torchvision.io.read_file(os.path.join(self.imgs_path, img_name))
+        # occlusion RNG drawn after boxes/flip so their values (and therefore the
+        # target) are identical to the standard __getitem__ path.
         return (
             jpeg,
             boxes_t,
             torch.tensor(flip),
+            torch.tensor(self.sample_occlusion(), dtype=torch.float32),
             torch.from_numpy(path_gt),
             torch.tensor(ylim_gt),
         )
@@ -407,13 +430,14 @@ class SequencePathsDataset(PathsDataset):
 def gpu_collate_fn(batch):
     """Collate for the gpu_preprocess thin-worker path.
 
-    Each item is (jpeg, boxes (T,4), flip, traj (2,A), ylim). JPEG byte tensors
-    have different lengths per image, so they are kept as a list (decoded on the
-    GPU); everything else is stacked.
+    Each item is (jpeg, boxes (T,4), flip, occl, traj (2,A), ylim). JPEG byte
+    tensors have different lengths per image, so they are kept as a list (decoded
+    on the GPU); everything else is stacked.
     """
     jpegs = [item[0] for item in batch]
     boxes = torch.stack([item[1] for item in batch], dim=0)  # (B, T, 4)
     flip = torch.stack([item[2] for item in batch], dim=0)  # (B,)
-    traj = torch.stack([item[3] for item in batch], dim=0)  # (B, 2, A)
-    ylim = torch.stack([item[4] for item in batch], dim=0)  # (B,)
-    return jpegs, boxes, flip, traj, ylim
+    occl = torch.stack([item[3] for item in batch], dim=0)  # (B,)
+    traj = torch.stack([item[4] for item in batch], dim=0)  # (B, 2, A)
+    ylim = torch.stack([item[5] for item in batch], dim=0)  # (B,)
+    return jpegs, boxes, flip, occl, traj, ylim
