@@ -82,7 +82,7 @@ past_clean = [base_out(det_occ, im) for im in imgs[:-1]]
 gt = labels[fn]
 W0, H0 = size
 # zoom on the track area so the rails are large and readable
-CROP = (int(W0 * 0.18), int(H0 * 0.28), int(W0 * 0.88), H0)
+CROP = (int(W0 * 0.10), int(H0 * 0.20), int(W0 * 0.95), H0)
 titles = {0.0: "(a) 비폐색", 0.3: "(b) 폐색 30%", 0.4: "(c) 폐색 40%"}
 panels = []
 from src.utils.evaluate import compute_iou
