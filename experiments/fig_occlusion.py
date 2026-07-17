@@ -18,8 +18,8 @@ from src.utils.interface import Detector
 
 OCC = sys.argv[1] if len(sys.argv) > 1 else "egopathrnn/weights/chromatic-laughter-5RNN-occ"
 SEQ = sys.argv[2] if len(sys.argv) > 2 else \
-    "/data3/bhkim/datasets/OSDaR23_unzip/11_main_station_11.1_extracted/rgb_center"
-FIDX = int(sys.argv[3]) if len(sys.argv) > 3 else 4
+    "/data3/bhkim/datasets/OSDaR23_unzip/9_station_ruebenkamp_9.7_extracted/rgb_center"
+FIDX = int(sys.argv[3]) if len(sys.argv) > 3 else 7
 FRACS = [0.0, 0.3, 0.4]
 FILL = (15, 15, 15)
 T = 5
@@ -83,9 +83,11 @@ gt = labels[fn]
 W0, H0 = size
 # zoom on the track area so the rails are large and readable
 CROP = (int(W0 * 0.18), int(H0 * 0.28), int(W0 * 0.88), H0)
-titles = {0.0: "(a) 비폐색", 0.3: "(b) 폐색 30% — 폐색 증강 RNN만 좌곡선 유지",
-          0.4: "(c) 폐색 40% — 회복 부분적"}
+titles = {0.0: "(a) 비폐색", 0.3: "(b) 폐색 30%", 0.4: "(c) 폐색 40%"}
 panels = []
+from src.utils.evaluate import compute_iou
+from src.utils.postprocessing import rails_to_mask as _r2m
+gtm = _r2m([gt["left_rail"], gt["right_rail"]], size)
 for frac in FRACS:
     img_o = occlude(imgs[-1], frac)
     cur = base_out(det_occ, img_o)
@@ -94,6 +96,9 @@ for frac in FRACS:
     single = det_occ.pred_to_result(cur[None, :], None, size)
     rnn_occ = det_occ.pred_to_result(refine(det_occ, window)[None, :], None, size)
     rnn_old = det_old.pred_to_result(refine(det_old, window)[None, :], None, size)
+    print(f"occ {int(frac*100):2d}%: single={compute_iou(_r2m(single, size), gtm):.3f} "
+          f"oldRNN={compute_iou(_r2m(rnn_old, size), gtm):.3f} "
+          f"occRNN={compute_iou(_r2m(rnn_occ, size), gtm):.3f}", flush=True)
     canvas = img_o.copy(); g = ImageDraw.Draw(canvas)
     draw_rails(g, [gt["left_rail"], gt["right_rail"]], (255, 220, 0), 7, dash=10)
     draw_rails(g, single, (235, 45, 45), 11)
