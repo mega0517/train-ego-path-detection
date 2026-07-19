@@ -1793,7 +1793,6 @@
     // the image files of the pane the preview was opened from. ▶ auto-plays them
     // at the selected interval (Space toggles), stopping at the last image.
     let fbNav = null;
-    let fbPlayTimer = null;
     function fbNavSet(side, e) {
       const imgs = FB[side].entries.filter((x) => !x.isDir && FB_IMG_RE.test(x.name));
       const idx = imgs.indexOf(e);
@@ -1824,24 +1823,51 @@
         im.src = "/api/fs/preview?path=" + encodeURIComponent(nx.path);
       }
     }
+    // Load-aware playback: each image is advanced only after it has fully
+    // loaded AND been displayed for the selected interval — a fixed setInterval
+    // would move on while large images are still streaming in.
+    let fbPlaying = false;
+    let fbPlaySession = 0;
     function fbPlayStop() {
-      if (fbPlayTimer) { clearInterval(fbPlayTimer); fbPlayTimer = null; }
+      fbPlaying = false;
+      fbPlaySession++;
       $("fbNavPlay").textContent = "▶";
     }
+    async function fbWaitImgLoaded(session, timeout = 15000) {
+      const t0 = Date.now();
+      while (fbPlaying && session === fbPlaySession && Date.now() - t0 < timeout) {
+        const im = document.querySelector("#fbPreviewBody img");
+        if (im && im.complete && im.naturalWidth > 0) {
+          try { await im.decode(); } catch (_) {}
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 60));
+      }
+    }
     function fbPlayToggle() {
-      if (fbPlayTimer) { fbPlayStop(); return; }
+      if (fbPlaying) { fbPlayStop(); return; }
       if (!fbNav || fbNav.imgs.length < 2) return;
       if (fbNav.idx >= fbNav.imgs.length - 1) fbNavGo(-(fbNav.imgs.length - 1));  // replay from start
+      fbPlaying = true;
+      const session = ++fbPlaySession;
       $("fbNavPlay").textContent = "⏸";
-      fbPlayTimer = setInterval(() => {
-        if (!fbNav || fbNav.idx >= fbNav.imgs.length - 1) { fbPlayStop(); return; }
-        fbNavGo(1);
-      }, parseFloat($("fbNavSpeed").value) * 1000);
+      (async () => {
+        const live = () => fbPlaying && session === fbPlaySession && fbNav;
+        while (live()) {
+          await fbWaitImgLoaded(session);
+          if (!live()) break;
+          await new Promise((r) => setTimeout(r, parseFloat($("fbNavSpeed").value) * 1000));
+          if (!live()) break;
+          if (fbNav.idx >= fbNav.imgs.length - 1) break;
+          fbNavGo(1);
+        }
+        if (session === fbPlaySession) fbPlayStop();
+      })();
     }
     $("fbNavPrev").onclick = () => fbNavGo(-1);
     $("fbNavNext").onclick = () => fbNavGo(1);
     $("fbNavPlay").onclick = fbPlayToggle;
-    $("fbNavSpeed").onchange = () => { if (fbPlayTimer) { fbPlayStop(); fbPlayToggle(); } };
+    $("fbNavSpeed").onchange = () => { if (fbPlaying) { fbPlayStop(); fbPlayToggle(); } };
     document.addEventListener("keydown", (ev) => {
       if ($("fbOverlay").style.display !== "flex" || !fbNav) return;
       if (ev.target && /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target.tagName)) return;
