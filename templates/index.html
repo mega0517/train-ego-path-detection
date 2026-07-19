@@ -413,6 +413,14 @@
           <button class="btn" id="fbNavPrev" title="이전 이미지 (←)">‹</button>
           <span id="fbNavPos" style="min-width:52px; text-align:center;"></span>
           <button class="btn" id="fbNavNext" title="다음 이미지 (→)">›</button>
+          <button class="btn" id="fbNavPlay" title="자동 재생/일시정지 (Space)">▶</button>
+          <select id="fbNavSpeed" title="재생 간격"
+                  style="font-size:12px; padding:4px 2px; border-radius:6px; border:1px solid var(--border); background:var(--panel); color:var(--text);">
+            <option value="0.2">0.2초</option>
+            <option value="0.5" selected>0.5초</option>
+            <option value="1">1초</option>
+            <option value="2">2초</option>
+          </select>
         </div>
         <div class="fb-zoom" id="fbZoomBar">
           <button class="btn" id="fbZoomOut" title="축소 (Ctrl+휠 / −)">−</button>
@@ -1779,15 +1787,18 @@
         body.innerHTML = ""; body.appendChild(pre);
       } catch (err) { body.innerHTML = "<div class='info'>미리보기 실패: " + err.message + "</div>"; }
     }
-    function fbClosePreview() { $("fbOverlay").style.display = "none"; }
+    function fbClosePreview() { $("fbOverlay").style.display = "none"; fbPlayStop(); }
 
     // Image navigation inside the preview: ‹/› buttons and ←/→ keys step through
-    // the image files of the pane the preview was opened from.
+    // the image files of the pane the preview was opened from. ▶ auto-plays them
+    // at the selected interval (Space toggles), stopping at the last image.
     let fbNav = null;
+    let fbPlayTimer = null;
     function fbNavSet(side, e) {
       const imgs = FB[side].entries.filter((x) => !x.isDir && FB_IMG_RE.test(x.name));
       const idx = imgs.indexOf(e);
       fbNav = idx >= 0 ? { side, imgs, idx } : null;
+      fbPlayStop();
       fbNavRender();
     }
     function fbNavRender() {
@@ -1806,14 +1817,37 @@
       const e = fbNav.imgs[ni];
       if (FB[fbNav.side].type === "server") fbPreview(e); else fbPreviewLocal(e);
       fbNavRender();
+      // preload the next server image so playback/stepping doesn't flash
+      const nx = fbNav.imgs[ni + 1];
+      if (nx && nx.path && FB[fbNav.side].type === "server") {
+        const im = new Image();
+        im.src = "/api/fs/preview?path=" + encodeURIComponent(nx.path);
+      }
+    }
+    function fbPlayStop() {
+      if (fbPlayTimer) { clearInterval(fbPlayTimer); fbPlayTimer = null; }
+      $("fbNavPlay").textContent = "▶";
+    }
+    function fbPlayToggle() {
+      if (fbPlayTimer) { fbPlayStop(); return; }
+      if (!fbNav || fbNav.imgs.length < 2) return;
+      if (fbNav.idx >= fbNav.imgs.length - 1) fbNavGo(-(fbNav.imgs.length - 1));  // replay from start
+      $("fbNavPlay").textContent = "⏸";
+      fbPlayTimer = setInterval(() => {
+        if (!fbNav || fbNav.idx >= fbNav.imgs.length - 1) { fbPlayStop(); return; }
+        fbNavGo(1);
+      }, parseFloat($("fbNavSpeed").value) * 1000);
     }
     $("fbNavPrev").onclick = () => fbNavGo(-1);
     $("fbNavNext").onclick = () => fbNavGo(1);
+    $("fbNavPlay").onclick = fbPlayToggle;
+    $("fbNavSpeed").onchange = () => { if (fbPlayTimer) { fbPlayStop(); fbPlayToggle(); } };
     document.addEventListener("keydown", (ev) => {
       if ($("fbOverlay").style.display !== "flex" || !fbNav) return;
       if (ev.target && /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target.tagName)) return;
       if (ev.key === "ArrowLeft") { ev.preventDefault(); fbNavGo(-1); }
       else if (ev.key === "ArrowRight") { ev.preventDefault(); fbNavGo(1); }
+      else if (ev.key === " ") { ev.preventDefault(); fbPlayToggle(); }
     });
 
     // Local file preview: stash the file on the server, then reuse the same
