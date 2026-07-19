@@ -326,9 +326,15 @@
       .browser { max-height: 45vh; }
 
       /* Preview overlay on a phone: title gets its own row (no vertical
-         one-char wrapping), nav/zoom/close wrap below it and stay on screen. */
+         one-char wrapping), nav/zoom/close wrap below it and stay on screen.
+         The whole control bar moves BELOW the image (thumb reach) via order. */
       #fbOverlay .box { width: 96%; height: 92%; }
-      #fbOverlay .head { flex-wrap: wrap; row-gap: 6px; }
+      #fbOverlay .body { order: 1; }
+      #fbOverlay .head {
+        order: 2; flex-wrap: wrap; row-gap: 6px;
+        border-bottom: 0; border-top: 1px solid var(--border);
+        padding-bottom: calc(10px + env(safe-area-inset-bottom));
+      }
       #fbOverlay #fbPreviewTitle {
         flex: 1 1 100%; font-size: 12px; line-height: 1.3;
         overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2;
