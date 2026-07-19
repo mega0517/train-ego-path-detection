@@ -102,8 +102,12 @@
                  display: none; align-items: center; justify-content: center; }
     #fbOverlay .box { background: var(--panel); border-radius: 10px; width: 80%; height: 82%;
                       display: flex; flex-direction: column; overflow: hidden; }
+    /* Control bar (filename, prev/next, zoom, close) sits BELOW the image on
+       all screens; the body renders first via flex order. */
     #fbOverlay .head { display: flex; justify-content: space-between; align-items: center;
-                       gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+                       gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border);
+                       order: 2; }
+    #fbOverlay .body { order: 1; }
     #fbOverlay .fb-zoom { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
     #fbOverlay .fb-zoom .btn { width: 30px; margin: 0; padding: 3px 0; background: #607d8b;
                                font-size: 15px; line-height: 1; }
@@ -326,13 +330,10 @@
       .browser { max-height: 45vh; }
 
       /* Preview overlay on a phone: title gets its own row (no vertical
-         one-char wrapping), nav/zoom/close wrap below it and stay on screen.
-         The whole control bar moves BELOW the image (thumb reach) via order. */
+         one-char wrapping), controls wrap and clear the home indicator. */
       #fbOverlay .box { width: 96%; height: 92%; }
-      #fbOverlay .body { order: 1; }
       #fbOverlay .head {
-        order: 2; flex-wrap: wrap; row-gap: 6px;
-        border-bottom: 0; border-top: 1px solid var(--border);
+        flex-wrap: wrap; row-gap: 6px;
         padding-bottom: calc(10px + env(safe-area-inset-bottom));
       }
       #fbOverlay #fbPreviewTitle {
