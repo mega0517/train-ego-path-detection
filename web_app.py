@@ -24,7 +24,7 @@ import threading
 
 import torch
 import yaml
-from flask import Flask, jsonify, render_template, request, Response, send_file, stream_with_context
+from flask import Flask, g, jsonify, render_template, request, Response, send_file, stream_with_context
 from PIL import Image
 
 # Register HEIC/HEIF support (iPhone photos) with PIL when available.
@@ -100,18 +100,45 @@ def _credentials_ok(user, password):
     return user_ok and pass_ok
 
 
+def _auth_cookie_token():
+    """Stable session token derived from the credentials; rotating the password
+    invalidates it. Lets the browser authenticate subsequent requests (images,
+    SSE, fetches) via cookie so it never re-prompts — iOS Safari in particular
+    asks for Basic credentials a second time on some subresource requests."""
+    import hashlib
+
+    return hashlib.sha256(f"tepnet-cookie:{AUTH_USER}:{AUTH_PASS}".encode()).hexdigest()
+
+
 @app.before_request
 def _require_auth():
     if not auth_enabled():
         return None
+    token = request.cookies.get("tep_auth")
+    if token and hmac.compare_digest(token, _auth_cookie_token()):
+        return None
     auth = request.authorization
     if auth and _credentials_ok(auth.username, auth.password):
+        g.set_auth_cookie = True
         return None
     return Response(
         "Authentication required.",
         401,
         {"WWW-Authenticate": 'Basic realm="TEP-Net"'},
     )
+
+
+@app.after_request
+def _issue_auth_cookie(resp):
+    if auth_enabled() and getattr(g, "set_auth_cookie", False):
+        resp.set_cookie(
+            "tep_auth",
+            _auth_cookie_token(),
+            max_age=30 * 24 * 3600,
+            httponly=True,
+            samesite="Lax",
+        )
+    return resp
 
 # Detectors are expensive to construct (model load), so cache them by
 # (model_path, device). Crop coordinates and temporal state are reset per
