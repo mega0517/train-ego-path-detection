@@ -389,6 +389,11 @@
     <div class="box">
       <div class="head">
         <b id="fbPreviewTitle" style="font-size:13px; word-break:break-all; flex:1;"></b>
+        <div class="fb-zoom" id="fbNavBar" style="display:none;">
+          <button class="btn" id="fbNavPrev" title="이전 이미지 (←)">‹</button>
+          <span id="fbNavPos" style="min-width:52px; text-align:center;"></span>
+          <button class="btn" id="fbNavNext" title="다음 이미지 (→)">›</button>
+        </div>
         <div class="fb-zoom" id="fbZoomBar">
           <button class="btn" id="fbZoomOut" title="축소 (Ctrl+휠 / −)">−</button>
           <span id="fbZoomPct" title="클릭: 100%로 초기화">100%</span>
@@ -1425,7 +1430,7 @@
           if (e.isDir) {
             if (isServer) fbLoadServer(side, e.path);
             else { st.stack.push(e.handle); await fbLoadLocal(side); }
-          } else if (isServer) { fbPreview(e); } else { fbPreviewLocal(e); }
+          } else { fbNavSet(side, e); if (isServer) fbPreview(e); else fbPreviewLocal(e); }
         };
         const meta = document.createElement("span");
         meta.className = "mk"; meta.style.color = "var(--muted)";
@@ -1755,6 +1760,41 @@
       } catch (err) { body.innerHTML = "<div class='info'>미리보기 실패: " + err.message + "</div>"; }
     }
     function fbClosePreview() { $("fbOverlay").style.display = "none"; }
+
+    // Image navigation inside the preview: ‹/› buttons and ←/→ keys step through
+    // the image files of the pane the preview was opened from.
+    let fbNav = null;
+    function fbNavSet(side, e) {
+      const imgs = FB[side].entries.filter((x) => !x.isDir && FB_IMG_RE.test(x.name));
+      const idx = imgs.indexOf(e);
+      fbNav = idx >= 0 ? { side, imgs, idx } : null;
+      fbNavRender();
+    }
+    function fbNavRender() {
+      const bar = $("fbNavBar");
+      if (!fbNav || fbNav.imgs.length < 2) { bar.style.display = "none"; return; }
+      bar.style.display = "flex";
+      $("fbNavPos").textContent = (fbNav.idx + 1) + "/" + fbNav.imgs.length;
+      $("fbNavPrev").disabled = fbNav.idx <= 0;
+      $("fbNavNext").disabled = fbNav.idx >= fbNav.imgs.length - 1;
+    }
+    function fbNavGo(d) {
+      if (!fbNav) return;
+      const ni = fbNav.idx + d;
+      if (ni < 0 || ni >= fbNav.imgs.length) return;
+      fbNav.idx = ni;
+      const e = fbNav.imgs[ni];
+      if (FB[fbNav.side].type === "server") fbPreview(e); else fbPreviewLocal(e);
+      fbNavRender();
+    }
+    $("fbNavPrev").onclick = () => fbNavGo(-1);
+    $("fbNavNext").onclick = () => fbNavGo(1);
+    document.addEventListener("keydown", (ev) => {
+      if ($("fbOverlay").style.display !== "flex" || !fbNav) return;
+      if (ev.target && /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target.tagName)) return;
+      if (ev.key === "ArrowLeft") { ev.preventDefault(); fbNavGo(-1); }
+      else if (ev.key === "ArrowRight") { ev.preventDefault(); fbNavGo(1); }
+    });
 
     // Local file preview: stash the file on the server, then reuse the same
     // path-based preview pipeline (images/PDF/HWP/xlsx/text) as server files.

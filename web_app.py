@@ -83,7 +83,7 @@ def _too_large(_e):
 # hardcoded. Auth is enabled only when a non-empty password is configured, so
 # trusted LAN use keeps working without credentials while a public Funnel/tunnel
 # exposure can be locked down by setting WEB_AUTH_PASS.
-AUTH_USER = os.environ.get("WEB_AUTH_USER", "admin")
+AUTH_USER = os.environ.get("WEB_AUTH_USER") or "admin"  # empty env var -> default
 AUTH_PASS = os.environ.get("WEB_AUTH_PASS", "")
 
 
