@@ -324,6 +324,19 @@
       .fb2-actions .btn { padding: 10px 12px; font-size: 13px; }
 
       .browser { max-height: 45vh; }
+
+      /* Preview overlay on a phone: title gets its own row (no vertical
+         one-char wrapping), nav/zoom/close wrap below it and stay on screen. */
+      #fbOverlay .box { width: 96%; height: 92%; }
+      #fbOverlay .head { flex-wrap: wrap; row-gap: 6px; }
+      #fbOverlay #fbPreviewTitle {
+        flex: 1 1 100%; font-size: 12px; line-height: 1.3;
+        overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+      #fbOverlay .fb-zoom .btn { width: 36px; padding: 8px 0; font-size: 15px; }
+      #fbOverlay .fb-zoom #fbNavPos { min-width: 46px; font-size: 12px; }
+      #fbOverlay .body { padding: 8px; }
     }
   </style>
 </head>
