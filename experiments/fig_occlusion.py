@@ -20,7 +20,7 @@ OCC = sys.argv[1] if len(sys.argv) > 1 else "egopathrnn/weights/chromatic-laught
 SEQ = sys.argv[2] if len(sys.argv) > 2 else \
     "/data3/bhkim/datasets/OSDaR23_unzip/9_station_ruebenkamp_9.7_extracted/rgb_center"
 FIDX = int(sys.argv[3]) if len(sys.argv) > 3 else 7
-FRACS = [0.0, 0.3, 0.4]
+FRACS = [0.0, 0.3]
 FILL = (15, 15, 15)
 T = 5
 device = "cuda"
@@ -78,6 +78,21 @@ def draw_rails(g, rails, color, width=9, dash=None):
             g.line(pts, fill=color, width=width)
 
 
+def fill_path(img, rails, rgba, outline=None):
+    """Fill the ego-path region (between the rails) as a translucent polygon."""
+    L, R = rails
+    if len(L) < 2 or len(R) < 2:
+        return img
+    poly = [tuple(p) for p in L] + [tuple(p) for p in R][::-1]
+    ov = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    g = ImageDraw.Draw(ov)
+    g.polygon(poly, fill=rgba)
+    if outline:
+        g.line([tuple(p) for p in L], fill=outline, width=6)
+        g.line([tuple(p) for p in R], fill=outline, width=6)
+    return Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+
+
 past_clean = [base_out(det_occ, im) for im in imgs[:-1]]
 gt = labels[fn]
 W0, H0 = size
@@ -99,11 +114,14 @@ for frac in FRACS:
     print(f"occ {int(frac*100):2d}%: single={compute_iou(_r2m(single, size), gtm):.3f} "
           f"oldRNN={compute_iou(_r2m(rnn_old, size), gtm):.3f} "
           f"occRNN={compute_iou(_r2m(rnn_occ, size), gtm):.3f}", flush=True)
-    canvas = img_o.copy(); g = ImageDraw.Draw(canvas)
+    canvas = img_o.copy()
+    # filled translucent path regions (like the reference visualization):
+    # red = single-frame path (diverges under occlusion), green = occ-RNN path
+    if frac > 0:
+        canvas = fill_path(canvas, single, (225, 30, 30, 110), outline=(225, 30, 30, 235))
+    canvas = fill_path(canvas, rnn_occ, (25, 200, 60, 120), outline=(20, 190, 50, 235))
+    g = ImageDraw.Draw(canvas)
     draw_rails(g, [gt["left_rail"], gt["right_rail"]], (255, 220, 0), 7, dash=10)
-    draw_rails(g, single, (235, 45, 45), 11)
-    draw_rails(g, rnn_old, (70, 130, 255), 9)
-    draw_rails(g, rnn_occ, (40, 220, 60), 9)
     if frac > 0:  # label the occluded input band
         f28 = ImageFont.truetype(FONT, 46)
         g.text((CROP[0] + 30, H0 - int(H0 * frac) + 18),
@@ -118,14 +136,19 @@ for frac in FRACS:
     panels += [strip, panel]
 
 # legend strip
-LEG = [((255, 220, 0), "정답(GT)"), ((235, 45, 45), "단일 프레임"),
-       ((70, 130, 255), "기존 RNN(항등)"), ((40, 220, 60), "폐색 증강 RNN")]
+LEG = [((255, 220, 0), "선", "정답(GT)"),
+       ((25, 200, 60), "면", "폐색 증강 RNN 경로(유지)"),
+       ((225, 30, 30), "면", "단일 프레임 경로(이탈)")]
 leg = Image.new("RGB", (panels[1].width, 60), (255, 255, 255))
 g = ImageDraw.Draw(leg)
 f_l = ImageFont.truetype(FONT, 30)
 x = 14
-for color, name in LEG:
-    g.line([(x, 30), (x + 56, 30)], fill=color, width=10)
+for color, kind, name in LEG:
+    if kind == "면":
+        g.rectangle([x, 16, x + 56, 44], fill=tuple(int(c * 0.55 + 255 * 0.45) for c in color),
+                    outline=color, width=3)
+    else:
+        g.line([(x, 30), (x + 56, 30)], fill=color, width=10)
     x += 66
     g.text((x, 10), name, font=f_l, fill=(0, 0, 0))
     x += g.textlength(name, font=f_l) + 40
