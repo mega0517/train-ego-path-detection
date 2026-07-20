@@ -80,6 +80,7 @@ def train(
     logger,
     val_iterations=1,
     preprocess=None,
+    save_from=0.9,
 ):
     """Trains the model and saves the best weights.
 
@@ -94,6 +95,11 @@ def train(
         device (torch.device): Device to use.
         logger (logging.Logger): Logger to use.
         val_iterations (int, optional): Number of validation epochs to average. Defaults to 1.
+        save_from (float, optional): Fraction of training after which the best
+            checkpoint may be saved. The default 0.9 ignores the first 90% of
+            epochs, which is fine while validation loss keeps falling but discards
+            the real optimum once the run starts overfitting. Pass 0.0 to keep the
+            global best. Defaults to 0.9.
     """
     train_loader, val_loader = dataloaders
     # bf16 autocast only on CUDA; harmless no-op on cpu/mps.
@@ -126,7 +132,8 @@ def train(
                 val_loss /= val_iterations
             if scheduler is not None:
                 scheduler.step()
-            if epoch >= epochs * 0.9 and val_loss < best_val_loss:
+            saved = epoch >= epochs * save_from and val_loss < best_val_loss
+            if saved:
                 best_val_loss = val_loss
                 torch.save(model.state_dict(), os.path.join(save_path, "best.pt"))
             logger.info(
@@ -134,6 +141,9 @@ def train(
                 + f" | EPOCH {(epoch+1):0{len(str(epochs))}}/{epochs}"
                 + f" | TRAIN LOSS: {train_loss:.5f}"
                 + f" | VAL LOSS: {val_loss:.5f}"
+                # mark the epoch best.pt came from; the log timestamps cannot be
+                # matched against the file mtime on an NFS-mounted weights dir
+                + (" | saved best.pt" if saved else "")
             )
             wandb.log({"train_loss": train_loss, "val_loss": val_loss})
     except KeyboardInterrupt:

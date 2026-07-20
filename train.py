@@ -108,6 +108,17 @@ def parse_arguments():
                         help="Keep frames of one recording in the same split. The first "
                              "capture group of this regex applied to the filename names "
                              r"the recording, e.g. '^(.*?)__' for OSDaR23.")
+    parser.add_argument("--group-split", type=str, default="balanced",
+                        choices=["balanced", "diverse"],
+                        help="With --group-regex, how to hand recordings to the splits. "
+                             "'balanced' packs the longest first and hits the quotas "
+                             "closely; 'diverse' spends the eval quota on the shortest "
+                             "recordings so val/test span many places.")
+    parser.add_argument("--save-from", type=float, default=0.9,
+                        help="Fraction of training after which best.pt may be saved "
+                             "(default 0.9, the upstream behaviour). Use 0 to keep the "
+                             "global validation optimum, which matters once the run "
+                             "overfits before the final epochs.")
     parser.add_argument("--multi-gpu", action="store_true",
                         help="Use all visible CUDA GPUs via DataParallel (splits the batch).")
     return parser.parse_args()
@@ -213,18 +224,33 @@ def main(args):
         # whichever split is furthest below its quota. Filling the splits in turn
         # instead would starve whichever one is filled last.
         targets = [p * len(names) for p in proportions]
-        keys.sort(key=lambda k: -len(groups[k]))
         parts, filled = [[], [], []], [0.0, 0.0, 0.0]
-        for key in keys:
-            part = min((p for p in range(3) if targets[p] > 0),
-                       key=lambda p: filled[p] / targets[p])
-            parts[part].append(key)
-            filled[part] += len(groups[key])
+        if args.group_split == "diverse":
+            # Spend the eval quota on the SHORTEST recordings, so validation and
+            # test cover many places instead of one long one. A test set that is
+            # 210 near-identical frames of a single platform reports how well the
+            # model does there, not whether it generalises.
+            keys.sort(key=lambda k: (len(groups[k]), k))
+            for key in keys:
+                short = [p for p in (1, 2) if filled[p] < targets[p]]
+                part = min(short, key=lambda p: filled[p] / targets[p]) if short else 0
+                parts[part].append(key)
+                filled[part] += len(groups[key])
+        else:
+            keys.sort(key=lambda k: -len(groups[k]))
+            for key in keys:
+                part = min((p for p in range(3) if targets[p] > 0),
+                           key=lambda p: filled[p] / targets[p])
+                parts[part].append(key)
+                filled[part] += len(groups[key])
         train_indices, val_indices, test_indices = (
             sorted(i for k in p for i in groups[k]) for p in parts
         )
-        print(f"Grouped split on /{args.group_regex}/: {len(keys)} groups -> "
-              f"train {len(train_indices)}, val {len(val_indices)}, test {len(test_indices)} frames")
+        print(f"Grouped split on /{args.group_regex}/ ({args.group_split}): "
+              f"{len(keys)} groups -> train {len(train_indices)}, "
+              f"val {len(val_indices)}, test {len(test_indices)} frames")
+        print(f"  val groups : {sorted(parts[1])}")
+        print(f"  test groups: {sorted(parts[2])}")
     else:
         indices = list(range(len(names)))
         random.shuffle(indices)
@@ -459,6 +485,7 @@ def main(args):
         logger=logger,
         val_iterations=config["val_iterations"],
         preprocess=preprocess,
+        save_from=args.save_from,
     )
 
     if len(test_indices) > 0:
