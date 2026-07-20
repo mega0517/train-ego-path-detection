@@ -35,5 +35,5 @@ seq_occlusion_min: 0.1  # minimum occluded fraction of the image height (from th
 seq_occlusion_max: 0.4  # maximum occluded fraction of the image height (from the bottom)
 
 # paths configuration
-images_path: "/data3/bhkim/datasets/rs19_val/jpgs/rs19_val"  # path to the images directory
-annotations_path: "/data3/bhkim/workspace/train-ego-path-detection/egopath/rs19_egopath.json"  # path to the annotations file
+images_path: "/data3/bhkim/datasets/OSDaR23_rgb_center"  # path to the images directory
+annotations_path: "/data3/bhkim/datasets/OSDaR23_rgb_center/egopath_labels.json"  # path to the annotations file

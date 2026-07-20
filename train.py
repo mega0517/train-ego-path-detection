@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import random
+import re
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
@@ -103,6 +104,10 @@ def parse_arguments():
                         help="Override the images directory from the global config.")
     parser.add_argument("--annotations-path", type=str, default=None,
                         help="Override the annotations JSON from the global config.")
+    parser.add_argument("--group-regex", type=str, default=None,
+                        help="Keep frames of one recording in the same split. The first "
+                             "capture group of this regex applied to the filename names "
+                             r"the recording, e.g. '^(.*?)__' for OSDaR23.")
     parser.add_argument("--multi-gpu", action="store_true",
                         help="Use all visible CUDA GPUs via DataParallel (splits the batch).")
     return parser.parse_args()
@@ -190,10 +195,40 @@ def main(args):
 
     set_seeds(config["seed"])  # set random state
     with open(config["annotations_path"]) as json_file:
-        indices = list(range(len(json.load(json_file).keys())))
-    random.shuffle(indices)
+        names = sorted(json.load(json_file).keys())
     proportions = (config["train_prop"], config["val_prop"], config["test_prop"])
-    train_indices, val_indices, test_indices = split_dataset(indices, proportions)
+    if args.group_regex:
+        # Frames from one recording are near-duplicates, so splitting them
+        # individually leaks the validation set into training and inflates the
+        # score. Keep every frame of a recording on the same side of the split.
+        pattern = re.compile(args.group_regex)
+        groups = {}
+        for i, name in enumerate(names):
+            m = pattern.search(name)
+            groups.setdefault(m.group(1) if m and m.groups() else name, []).append(i)
+        keys = sorted(groups)
+        random.shuffle(keys)
+        # Recordings differ in length by an order of magnitude, so balance the
+        # splits by FRAME count: place the largest recordings first, each into
+        # whichever split is furthest below its quota. Filling the splits in turn
+        # instead would starve whichever one is filled last.
+        targets = [p * len(names) for p in proportions]
+        keys.sort(key=lambda k: -len(groups[k]))
+        parts, filled = [[], [], []], [0.0, 0.0, 0.0]
+        for key in keys:
+            part = min((p for p in range(3) if targets[p] > 0),
+                       key=lambda p: filled[p] / targets[p])
+            parts[part].append(key)
+            filled[part] += len(groups[key])
+        train_indices, val_indices, test_indices = (
+            sorted(i for k in p for i in groups[k]) for p in parts
+        )
+        print(f"Grouped split on /{args.group_regex}/: {len(keys)} groups -> "
+              f"train {len(train_indices)}, val {len(val_indices)}, test {len(test_indices)} frames")
+    else:
+        indices = list(range(len(names)))
+        random.shuffle(indices)
+        train_indices, val_indices, test_indices = split_dataset(indices, proportions)
     set_seeds(config["seed"])  # reset random state
 
     dataset_cls = SequencePathsDataset if args.temporal else PathsDataset
