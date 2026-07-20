@@ -177,6 +177,12 @@
       font-size: 13px;
       background: #fff;
     }
+    /* Server paths are long and the distinguishing part is the tail, so use a
+       condensed monospace face to fit more of it in the sidebar width. */
+    input[type="text"].pathinput {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px; letter-spacing: -0.2px;
+    }
     .model-list { max-height: none; }
     .model-item {
       display: flex; align-items: center; gap: 8px;
@@ -616,13 +622,14 @@
       <div class="card span2">
         <h2>데이터셋 라벨링</h2>
         <label>이미지 폴더 (서버 경로)</label>
-        <div class="grid2">
-          <input type="text" id="lblFolder" placeholder="/data3/.../images" />
-          <button class="btn" id="lblBrowseBtn" style="margin-top:0;background:#455a64;">탐색…</button>
-        </div>
+        <input type="text" id="lblFolder" class="pathinput" list="lblFolderRecent"
+               placeholder="/data3/.../images" />
+        <datalist id="lblFolderRecent"></datalist>
+        <button class="btn" id="lblBrowseBtn" style="margin-top:6px;background:#455a64;">탐색…</button>
         <div class="browser" id="lblBrowser" style="display:none;"></div>
         <label style="margin-top:8px;">주석 JSON (출력, 서버 경로)</label>
-        <input type="text" id="lblAnnots" placeholder="auto: <folder>/egopath_labels.json" />
+        <input type="text" id="lblAnnots" class="pathinput"
+               placeholder="auto: <folder>/egopath_labels.json" />
         <div class="info">위에서 폴더를 선택하면 이미지가 자동으로 로드됩니다.</div>
       </div>
 
@@ -841,9 +848,11 @@
     // Server folder browser — navigate folders and pick one (no typing needed).
     // Parameterised so both the inference and training pages can reuse it.
     function pickServerFolder(path, targetId, browserId) {
-      $(targetId).value = path;
+      const el = $(targetId);
+      el.value = path; el.title = path;
       $(browserId).style.display = "none";
-      if ($(targetId).onchange) $(targetId).onchange();
+      if (typeof pathTail === "function") pathTail(el);
+      if (el.onchange) el.onchange();
     }
     async function openBrowse(path, targetId, browserId) {
       try {
@@ -2110,20 +2119,62 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         }
       } catch (_) { /* fall back to the default path */ }
       $("lblAnnots").value = annots;
+      lblMruSave();
       loadLabelList();
     }
     $("lblFolder").onchange = lblFolderChanged;
     // Re-list when the annotations path changes (refreshes labeled marks).
-    $("lblAnnots").onchange = () => { if ($("lblFolder").value.trim()) loadLabelList(); };
+    $("lblAnnots").onchange = () => {
+      if (!$("lblFolder").value.trim()) return;
+      lblMruSave();
+      loadLabelList();
+    };
 
-    // Long server paths: on focus scroll to the start so the whole path reads from
-    // the beginning, and mirror the value into the title so hover shows it in full.
+    // Long server paths don't fit the sidebar. Idle, scroll to the END so the
+    // folder name stays visible (the leading /data3/... is the same everywhere);
+    // on focus jump back to the start for editing. Hover shows the full path.
+    function pathTail(el) { if (el) requestAnimationFrame(() => { el.scrollLeft = el.scrollWidth; }); }
     ["lblFolder", "lblAnnots", "trImages", "trAnnots"].forEach((id) => {
       const el = $(id); if (!el) return;
       const sync = () => { el.title = el.value; };
       el.addEventListener("input", sync);
       el.addEventListener("focus", () => { sync(); requestAnimationFrame(() => { el.scrollLeft = 0; }); });
+      el.addEventListener("blur", () => { sync(); pathTail(el); });
     });
+
+    // Remember recently used labeling paths so the folder box comes back filled in.
+    const LBL_MRU = "tepnet.labelPaths";
+    function lblMruLoad() {
+      try { return JSON.parse(localStorage.getItem(LBL_MRU)) || {}; } catch (_) { return {}; }
+    }
+    function lblMruRender(recent) {
+      const dl = $("lblFolderRecent"); if (!dl) return;
+      dl.innerHTML = "";
+      (recent || []).forEach((p) => {
+        const o = document.createElement("option"); o.value = p; dl.appendChild(o);
+      });
+    }
+    function lblMruSave() {
+      const folder = $("lblFolder").value.trim();
+      if (!folder) return;
+      const st = lblMruLoad();
+      const recent = [folder].concat((st.recent || []).filter((p) => p !== folder)).slice(0, 8);
+      try {
+        localStorage.setItem(LBL_MRU, JSON.stringify(
+          { folder, annots: $("lblAnnots").value.trim(), recent }));
+      } catch (_) { /* private mode / quota — remembering is best-effort */ }
+      lblMruRender(recent);
+    }
+    (function lblMruRestore() {
+      const st = lblMruLoad();
+      lblMruRender(st.recent);
+      if (!st.folder || $("lblFolder").value.trim()) return;
+      $("lblFolder").value = st.folder;
+      if (st.annots) $("lblAnnots").value = st.annots;
+      ["lblFolder", "lblAnnots"].forEach((id) => { $(id).title = $(id).value; pathTail($(id)); });
+      // The folder may have been deleted since; loadLabelList reports that itself.
+      if (st.annots) loadLabelList(); else lblFolderChanged();
+    })();
 
     function renderImgList() {
       const el = $("lblList"); el.innerHTML = "";
