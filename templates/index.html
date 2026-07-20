@@ -122,6 +122,10 @@
       border: 1px solid var(--border); padding: 3px 8px; white-space: nowrap;
       max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
     #fbOverlay table.fb-xls th { background: var(--bg); position: sticky; top: 0; font-weight: 600; }
+    /* clickable links inside md/txt/csv previews */
+    #fbPreviewBody a { color: #1976d2; text-decoration: underline; }
+    #fbPreviewBody a:hover { color: #0d47a1; }
+    #fbPreviewBody pre a { word-break: break-all; }
     #fbOverlay .fb-frame { width: 100%; height: 100%; min-height: 70vh; border: 0; background: #fff; }
     #fbOverlay .hwp-wrap { display: flex; flex-direction: column; height: 100%; }
     #fbOverlay .hwp-bar { display: flex; align-items: center; padding: 0 0 8px; flex-shrink: 0; }
@@ -1687,6 +1691,18 @@
       fbSetStatus(`해제 완료: ${okN}개 성공` + (failN ? `, ${failN}개 실패 (${errs.slice(0, 2).join("; ")})` : ""));
       fbLoadServer(side, FB[side].path);
     }
+    // Escape HTML, then turn markdown links [label](url) and bare http(s) URLs
+    // into clickable anchors. Used by the text (.md/.txt) and table (.csv) previews.
+    function fbLinkify(text) {
+      const esc = String(text == null ? "" : text)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+      let s = esc.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+        (m, label, url) => `<a href="${url}" target="_blank" rel="noopener">${label}</a>`);
+      s = s.replace(/(^|[^">])((?:https?:\/\/)[^\s<>"')\]]+)/g,
+        (m, pre, url) => `${pre}<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
+      return s;
+    }
         async function fbPreview(e) {
       $("fbOverlay").style.display = "flex";
       $("fbPreviewTitle").textContent = e.name;
@@ -1771,7 +1787,7 @@
               const tr = document.createElement("tr");
               r.forEach((c) => {
                 const cell = document.createElement(ri === 0 ? "th" : "td");
-                cell.textContent = c; tr.appendChild(cell);
+                cell.innerHTML = fbLinkify(c); tr.appendChild(cell);
               });
               tbl.appendChild(tr);
             });
@@ -1783,7 +1799,7 @@
           });
           return;
         }
-        const pre = document.createElement("pre"); pre.textContent = j.text || "";
+        const pre = document.createElement("pre"); pre.innerHTML = fbLinkify(j.text || "");
         body.innerHTML = ""; body.appendChild(pre);
       } catch (err) { body.innerHTML = "<div class='info'>미리보기 실패: " + err.message + "</div>"; }
     }
