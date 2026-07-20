@@ -421,7 +421,11 @@
         <b id="fbPreviewTitle" style="font-size:13px; word-break:break-all; flex:1;"></b>
         <div class="fb-zoom" id="fbNavBar" style="display:none;">
           <button class="btn" id="fbNavPrev" title="이전 이미지 (←)">‹</button>
-          <span id="fbNavPos" style="min-width:52px; text-align:center;"></span>
+          <input type="number" id="fbNavPos" min="1" title="번호를 입력하고 Enter로 이동"
+                 style="width:58px; text-align:right; font-size:12px; padding:3px 4px;
+                        border-radius:6px; border:1px solid var(--border);
+                        background:var(--panel); color:var(--text);" />
+          <span id="fbNavTotal" style="font-size:12px; white-space:nowrap;"></span>
           <button class="btn" id="fbNavNext" title="다음 이미지 (→)">›</button>
           <button class="btn" id="fbNavPlay" title="자동 재생/일시정지 (Space)">▶</button>
           <select id="fbNavSpeed" title="재생 간격"
@@ -1830,14 +1834,20 @@
       const bar = $("fbNavBar");
       if (!fbNav || fbNav.imgs.length < 2) { bar.style.display = "none"; return; }
       bar.style.display = "flex";
-      $("fbNavPos").textContent = (fbNav.idx + 1) + "/" + fbNav.imgs.length;
+      const pos = $("fbNavPos");
+      pos.max = fbNav.imgs.length;
+      // leave the box alone while it is being typed into, or playback would
+      // overwrite the number mid-entry
+      if (document.activeElement !== pos) pos.value = fbNav.idx + 1;
+      $("fbNavTotal").textContent = "/ " + fbNav.imgs.length;
       $("fbNavPrev").disabled = fbNav.idx <= 0;
       $("fbNavNext").disabled = fbNav.idx >= fbNav.imgs.length - 1;
     }
     function fbNavGo(d) {
-      if (!fbNav) return;
-      const ni = fbNav.idx + d;
-      if (ni < 0 || ni >= fbNav.imgs.length) return;
+      if (fbNav) fbNavGoTo(fbNav.idx + d);
+    }
+    function fbNavGoTo(ni) {
+      if (!fbNav || ni < 0 || ni >= fbNav.imgs.length || ni === fbNav.idx) return;
       fbNav.idx = ni;
       const e = fbNav.imgs[ni];
       if (FB[fbNav.side].type === "server") fbPreview(e); else fbPreviewLocal(e);
@@ -1892,6 +1902,22 @@
     }
     $("fbNavPrev").onclick = () => fbNavGo(-1);
     $("fbNavNext").onclick = () => fbNavGo(1);
+    // Typing a position jumps straight there — stepping through hundreds of
+    // frames with ‹ › to reach a known one is the thing this replaces.
+    function fbNavJump() {
+      if (!fbNav) return;
+      const pos = $("fbNavPos");
+      const n = parseInt(pos.value, 10);
+      if (!Number.isFinite(n)) { fbNavRender(); return; }
+      fbPlayStop();
+      fbNavGoTo(Math.min(Math.max(n, 1), fbNav.imgs.length) - 1);
+      fbNavRender();   // snap the box back if the number was out of range
+    }
+    $("fbNavPos").onchange = fbNavJump;
+    $("fbNavPos").onkeydown = (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); fbNavJump(); $("fbNavPos").blur(); }
+    };
+    $("fbNavPos").onfocus = () => $("fbNavPos").select();
     $("fbNavPlay").onclick = fbPlayToggle;
     $("fbNavSpeed").onchange = () => { if (fbPlaying) { fbPlayStop(); fbPlayToggle(); } };
     document.addEventListener("keydown", (ev) => {
