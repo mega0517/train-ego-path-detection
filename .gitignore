@@ -30,6 +30,8 @@ _workspace/
 
 # Web app training log
 train_web.log
+# Dataset-specific training logs (train_osdar23.log, ...)
+train_*.log
 # Web app server log
 web_app.log
 
