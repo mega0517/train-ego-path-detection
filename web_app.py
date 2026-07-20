@@ -2626,6 +2626,78 @@ def api_label_clear_all():
     return jsonify({"ok": True, "removed": removed})
 
 
+def _gauge_qa(left, right, img_h=None):
+    """Flag an ego-path label whose track gauge is geometrically implausible.
+
+    On a planar track the rails converge to the horizon, so the gap between
+    them shrinks linearly with row: gauge(y) ~= a * (y - y_horizon). A label
+    that crosses over, pinches shut, or wobbles does not fit that line, which
+    is what a mis-detected neighbouring track looks like.
+
+    Returns (ok, reasons, stats). Cheap enough to run over a whole folder.
+    """
+    import numpy as np
+
+    if not left or not right or len(left) < 2 or len(right) < 2:
+        return False, ["rail missing or too short"], {}
+    ys = np.linspace(max(min(p[1] for p in left), min(p[1] for p in right)),
+                     min(max(p[1] for p in left), max(p[1] for p in right)), 24)
+    if ys[-1] - ys[0] < 20:
+        return False, ["rails barely overlap vertically"], {}
+
+    def interp(rail):
+        r = sorted(rail, key=lambda p: p[1])
+        return np.interp(ys, [p[1] for p in r], [p[0] for p in r])
+
+    lx, rx = interp(left), interp(right)
+    gauge = rx - lx
+    reasons = []
+    if (gauge < -2).any():
+        reasons.append("rails cross over")
+    gmin, gmax = float(gauge.min()), float(gauge.max())
+    # Note: gauge legitimately shrinks to ~0 where the label reaches the
+    # vanishing point, so a small minimum is normal and is NOT flagged.
+    # A straight line through (y, gauge) is the perspective model; scatter
+    # around it means the two rails are not a matched pair.
+    coef = np.polyfit(ys, gauge, 1)
+    resid = np.abs(np.polyval(coef, ys) - gauge)
+    rel = float(resid.max() / max(gmax, 1.0))
+    if rel > 0.30:
+        reasons.append(f"gauge not perspective-consistent ({rel * 100:.0f}% off)")
+    if coef[0] <= 0:
+        reasons.append("gauge widens toward the horizon")
+    if img_h and max(max(p[1] for p in left), max(p[1] for p in right)) < img_h - 8:
+        reasons.append("rails stop short of the image bottom")
+    stats = {"gauge_min": round(gmin, 1), "gauge_max": round(gmax, 1),
+             "fit_error_pct": round(rel * 100, 1)}
+    return (not reasons), reasons, stats
+
+
+@app.route("/api/label/qa", methods=["POST"])
+def api_label_qa():
+    """Review every label in an annotations file and list the suspicious ones."""
+    annots = (request.form.get("annots") or "").strip()
+    folder = (request.form.get("folder") or "").strip()
+    if not annots.lower().endswith(".json") or not _annots_path_ok(annots):
+        return jsonify({"error": "Invalid annotations path."}), 400
+    data = _load_annotations(annots)
+    img_h = None
+    files = list_folder_images(folder) if folder else None
+    if files:
+        try:
+            with Image.open(os.path.join(folder, files[0])) as im:
+                img_h = im.height
+        except Exception:  # noqa: BLE001
+            img_h = None
+    flagged = []
+    for name in sorted(data):
+        v = data[name] or {}
+        ok, reasons, stats = _gauge_qa(v.get("left_rail"), v.get("right_rail"), img_h)
+        if not ok:
+            flagged.append({"name": name, "reasons": reasons, **stats})
+    return jsonify({"ok": True, "checked": len(data), "flagged": flagged})
+
+
 # --------------------------------------------------------------------------- #
 # RNN transfer-learning training
 # --------------------------------------------------------------------------- #

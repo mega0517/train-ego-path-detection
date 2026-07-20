@@ -679,6 +679,7 @@
 
       <div class="card span2">
         <h2>이미지 <span id="lblCount" style="color:var(--muted);font-weight:400;"></span></h2>
+        <button class="btn" id="lblQaBtn" style="background:#ef6c00;margin-bottom:6px;">라벨 검수 (궤간 검사)</button>
         <button class="btn" id="lblClearAllFilesBtn" style="background:#c62828;margin-bottom:6px;">모든 파일 라벨 삭제</button>
         <div class="img-list" id="lblList"></div>
       </div>
@@ -2130,7 +2131,8 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       lbl.images.forEach((im, i) => {
         const it = document.createElement("div");
         it.className = "img-item" + (i === lbl.idx ? " active" : "");
-        it.innerHTML = `<span>${im.name}</span><span class="mk">${im.labeled ? "✓" : ""}</span>`;
+        const flag = im.qa ? `<span class="mk" style="color:#ef6c00;" title="${im.qa}">⚠</span>` : "";
+        it.innerHTML = `<span>${im.name}</span>${flag}<span class="mk">${im.labeled ? "✓" : ""}</span>`;
         it.onclick = () => loadLabelImage(i);
         el.appendChild(it);
         if (i === lbl.idx) activeEl = it;
@@ -2283,6 +2285,27 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
     $("lblUndoBtn").onclick = () => { (lbl.rail === "left" ? lbl.left : lbl.right).pop(); redrawLabel(); };
     $("lblClearBtn").onclick = () => { if (lbl.rail === "left") lbl.left = []; else lbl.right = []; redrawLabel(); };
     $("lblClearAllBtn").onclick = () => { lbl.left = []; lbl.right = []; redrawLabel(); };
+    // Geometry check: flag labels whose track gauge is not perspective-consistent.
+    // Catches degenerate/mismatched rail pairs; it cannot tell that a tidy pair
+    // sits on the wrong track, so a clean result is not proof the labels are right.
+    $("lblQaBtn").onclick = async () => {
+      const folder = $("lblFolder").value.trim(), annots = $("lblAnnots").value.trim();
+      if (!annots) { $("lblStatus").textContent = "주석 JSON 경로가 없습니다."; return; }
+      $("lblQaBtn").disabled = true;
+      $("lblStatus").textContent = "라벨 검수 중…";
+      try {
+        const fd = new FormData(); fd.append("annots", annots); fd.append("folder", folder);
+        const r = await (await fetch("/api/label/qa", { method: "POST", body: fd })).json();
+        if (r.error) throw new Error(r.error);
+        const by = {}; r.flagged.forEach((f) => by[f.name] = f.reasons.join("; "));
+        lbl.images.forEach((im) => { im.qa = by[im.name] || null; });
+        renderImgList();
+        $("lblStatus").textContent = r.flagged.length
+          ? `검수 완료: ${r.checked}개 중 ${r.flagged.length}개 의심 (목록의 ⚠ 표시, 마우스를 올리면 사유)`
+          : `검수 완료: ${r.checked}개 모두 기하학적으로 정상 ✓ (궤도 선택 오류는 눈으로 확인하세요)`;
+      } catch (e) { $("lblStatus").textContent = "검수 오류: " + e.message; }
+      finally { $("lblQaBtn").disabled = false; }
+    };
     // Delete labels for ALL files in the current annotations JSON.
     $("lblClearAllFilesBtn").onclick = async () => {
       const annots = $("lblAnnots").value.trim();
