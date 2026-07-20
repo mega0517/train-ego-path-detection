@@ -2231,6 +2231,61 @@ def _rdp_simplify(points, eps=10.0):
     return [points[0], points[-1]]
 
 
+def _largest_blob(mask):
+    """Keep only the biggest connected component of a boolean mask.
+
+    Segmentation output often carries stray blobs (sky, buildings) far from the
+    track; taking the leftmost/rightmost pixel per row across them produces
+    wild zig-zags, so everything but the main path is dropped.
+    """
+    import cv2
+    import numpy as np
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
+    if n <= 2:  # background only, or a single component already
+        return mask
+    biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    return labels == biggest
+
+
+def _widest_run(row, min_width=3):
+    """Return (start, end) of the widest contiguous True run in a mask row."""
+    import numpy as np
+
+    idx = np.where(row)[0]
+    if len(idx) == 0:
+        return None
+    breaks = np.where(np.diff(idx) > 1)[0]
+    starts = np.concatenate(([0], breaks + 1))
+    ends = np.concatenate((breaks, [len(idx) - 1]))
+    widest = int(np.argmax(idx[ends] - idx[starts]))
+    lo, hi = int(idx[starts[widest]]), int(idx[ends[widest]])
+    return (lo, hi) if hi - lo + 1 >= min_width else None
+
+
+def _drop_center_outliers(ys, lo, hi, tol=3.0):
+    """Boolean keep-mask rejecting rows whose path centre leaves a smooth curve.
+
+    The ego-path centre traces a gentle 2nd-order curve down the image; rows
+    that jump away from it come from a mis-segmented side track.
+    """
+    import numpy as np
+
+    if len(ys) < 5:
+        return np.ones(len(ys), dtype=bool)
+    centers = (lo + hi) / 2.0
+    coef = np.polyfit(ys, centers, 2)
+    resid = np.abs(np.polyval(coef, ys) - centers)
+    med = np.median(resid)
+    keep = resid <= max(tol * med, 4.0)
+    if keep.sum() >= 5:  # refit without the outliers for a tighter second pass
+        coef = np.polyfit(ys[keep], centers[keep], 2)
+        resid = np.abs(np.polyval(coef, ys) - centers)
+        med = np.median(resid[keep])
+        keep = resid <= max(tol * med, 4.0)
+    return keep
+
+
 @app.route("/api/label/detect_model", methods=["POST"])
 def api_label_detect_model():
     """Auto-label every frame by running a trained model (default brilliant-horse-15)
@@ -2261,18 +2316,22 @@ def api_label_detect_model():
     def rails_from_result(res):
         """Return (left_rail, right_rail) point lists from a detector result."""
         if method == "segmentation":
-            arr = np.array(res.convert("L")) > 0
+            arr = _largest_blob(np.array(res.convert("L")) > 0)
             rows = np.where(arr.any(axis=1))[0]
             if len(rows) < 2:
                 return None, None
             grid = np.linspace(rows.min(), rows.max(), 48)
-            left, right = [], []
+            ys, lo, hi = [], [], []
             for y in grid:
-                yy = int(round(y)); cols = np.where(arr[yy])[0]
-                if len(cols):
-                    left.append([int(cols[0]), yy]); right.append([int(cols[-1]), yy])
-            if len(left) < 2:
+                yy = int(round(y))
+                span = _widest_run(arr[yy])
+                if span is not None:
+                    ys.append(yy); lo.append(span[0]); hi.append(span[1])
+            keep = _drop_center_outliers(np.array(ys), np.array(lo), np.array(hi))
+            if keep.sum() < 2:
                 return None, None
+            left = [[int(lo[i]), int(ys[i])] for i in np.where(keep)[0]]
+            right = [[int(hi[i]), int(ys[i])] for i in np.where(keep)[0]]
             return _rdp_simplify(left), _rdp_simplify(right)
         # regression / classification: detect() already returns [left, right]
         if isinstance(res, (list, tuple)) and len(res) == 2:
