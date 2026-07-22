@@ -121,6 +121,12 @@ def parse_arguments():
                              "overfits before the final epochs.")
     parser.add_argument("--multi-gpu", action="store_true",
                         help="Use all visible CUDA GPUs via DataParallel (splits the batch).")
+    parser.add_argument("--resume", nargs="?", const="auto", default=None,
+                        help="Resume an interrupted run from its full-state checkpoint. "
+                             "Bare --resume uses <save_path>/last.pt (works for --temporal, "
+                             "whose save path is deterministic); or pass an explicit "
+                             "path/to/last.pt and training continues in that directory. "
+                             "Launch with the same arguments as the interrupted run.")
     return parser.parse_args()
 
 
@@ -431,6 +437,19 @@ def main(args):
     else:
         run_name = wandb.run.name or wandb.run.id or f"{method}-{args.backbone}"
         save_path = os.path.join(base_path, "weights", run_name)
+
+    # Resolve --resume. An explicit checkpoint path pins save_path to its directory
+    # so the resumed run keeps writing to the same place (a non-temporal run would
+    # otherwise get a fresh random wandb name). Bare --resume ("auto") targets the
+    # deterministic temporal save path.
+    resume_from = None
+    if args.resume is not None:
+        if args.resume == "auto":
+            resume_from = os.path.join(save_path, "last.pt")
+        else:
+            resume_from = os.path.abspath(args.resume)
+            save_path = os.path.dirname(resume_from)
+
     logger.info(f"\nSaving model to {save_path}")
     os.makedirs(save_path, exist_ok=True)
     with open(os.path.join(save_path, "config.yaml"), "w") as f:
@@ -486,6 +505,7 @@ def main(args):
         val_iterations=config["val_iterations"],
         preprocess=preprocess,
         save_from=args.save_from,
+        resume_from=resume_from,
     )
 
     if len(test_indices) > 0:
