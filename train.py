@@ -476,16 +476,25 @@ def main(args):
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=config["learning_rate"],
     )
-    scheduler = (
-        torch.optim.lr_scheduler.OneCycleLR(
-            optimizer=optimizer,
-            max_lr=config["learning_rate"],
-            total_steps=config["epochs"],
-            pct_start=0.1,
-        )
-        if config["scheduler"] == "one_cycle"
-        else None
-    )
+    scheduler = None
+    if config["scheduler"] == "one_cycle":
+        total = config["epochs"]
+        if total < 4:
+            # OneCycleLR divides by each phase's length; a 1-cycle over 1-3 epochs
+            # leaves the warmup or anneal phase 0 steps long (ZeroDivisionError) and
+            # is meaningless anyway. Fall back to a constant LR.
+            logger.info(f"\n[scheduler] one_cycle needs >=4 epochs (got {total}); "
+                        f"using a constant learning rate instead.")
+        else:
+            # Keep the 0.1 warmup for normal runs, but for small epoch counts raise
+            # pct_start just enough that both phases keep >=1 step.
+            pct_start = min(max(0.1, 2.0 / total), 1.0 - 2.0 / total)
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer=optimizer,
+                max_lr=config["learning_rate"],
+                total_steps=total,
+                pct_start=pct_start,
+            )
 
     preprocess = GpuPreprocess(config, device) if gpu_preprocess else None
     if gpu_preprocess:
