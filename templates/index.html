@@ -356,6 +356,7 @@
       #fbOverlay .body { padding: 8px; }
     }
   </style>
+  <script src="/static/marked.min.js"></script>
 </head>
 <body>
   <header>
@@ -369,6 +370,8 @@
       <button class="tab" id="tabTrain">학습 RNN Transfer</button>
       <button class="tab" id="tabInfer">추론 Inference</button>
       <button class="tab" id="tabFiles">파일 File Browser</button>
+      <button class="tab" id="tabSwitch">🚆 분기기 Switch</button>
+      <button class="tab" id="tabGhRepo">🐙 Laurent 원본</button>
       <a class="tab" href="/recorder" target="_blank" style="text-decoration:none;">🎬 녹화</a>
     </span>
     <span class="status" id="deviceStatus">…</span>
@@ -445,6 +448,246 @@
         <button class="btn" style="width:auto; margin:0; padding:3px 10px; background:#90a4ae;" onclick="fbClosePreview()">✕ 닫기</button>
       </div>
       <div class="body" id="fbPreviewBody"></div>
+    </div>
+  </div>
+
+  <div class="layout" id="pageSwitch" style="display:none; flex-direction:column; overflow:hidden;">
+    <style>
+      #pageSwitch .sw-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+        padding:10px 14px;border-bottom:1px solid var(--border);background:var(--panel)}
+      #pageSwitch .sw-chips{display:flex;flex-wrap:wrap;gap:6px}
+      #pageSwitch .sw-chip{background:#fff;border:1px solid var(--border);color:var(--text);
+        padding:5px 11px;border-radius:999px;font-size:13px;cursor:pointer;
+        display:inline-flex;align-items:center;gap:6px;user-select:none}
+      #pageSwitch .sw-chip:hover{border-color:var(--accent)}
+      #pageSwitch .sw-chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+      #pageSwitch .sw-chip .n{font-size:11px;opacity:.7}
+      #pageSwitch select,#pageSwitch input{background:#fff;border:1px solid var(--border);
+        color:var(--text);padding:7px 10px;border-radius:8px;font-size:13px;outline:none}
+      #pageSwitch input{min-width:170px}
+      #pageSwitch .sw-count{color:var(--muted);font-size:13px;white-space:nowrap}
+      #pageSwitch .sw-scroll{flex:1;overflow-y:auto;padding:14px}
+      #pageSwitch .sw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+      #pageSwitch .sw-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+        overflow:hidden;cursor:pointer;transition:.12s}
+      #pageSwitch .sw-card:hover{border-color:var(--accent);transform:translateY(-2px)}
+      #pageSwitch .sw-card img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#e9edf1}
+      #pageSwitch .sw-meta{padding:6px 9px;font-size:12px;display:flex;justify-content:space-between;gap:6px}
+      #pageSwitch .sw-meta .r{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      #pageSwitch .sw-meta .s{color:var(--muted);font-variant-numeric:tabular-nums;flex:none}
+      #pageSwitch .sw-empty{color:var(--muted);text-align:center;padding:50px 0}
+      /* lightbox */
+      #swLb{position:fixed;inset:0;z-index:1000;background:rgba(6,8,11,.95);display:none;
+        flex-direction:column;padding:14px}
+      #swLb.open{display:flex}
+      #swLb .imgwrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
+      #swLb img{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px}
+      #swLb .bar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:12px 6px 2px;font-size:14px;color:#e6edf3}
+      #swLb .bar .mut{color:#8b98a9;font-size:13px}
+      #swLb a.yt{background:#ff0033;color:#fff;text-decoration:none;padding:8px 14px;border-radius:8px;
+        font-weight:600;font-size:13px}
+      #swLb a.yt:hover{background:#d80029}
+      #swLb .nav{position:absolute;top:50%;transform:translateY(-50%);font-size:34px;color:#fff;
+        background:rgba(0,0,0,.35);border:none;cursor:pointer;padding:6px 16px;border-radius:10px}
+      #swLb .nav:hover{background:rgba(0,0,0,.6)}
+      #swLb .prev{left:10px}#swLb .next{right:10px}
+      #swLb .x{position:absolute;top:12px;right:16px;font-size:26px;color:#fff;background:none;border:none;cursor:pointer}
+      #swLb .idx{position:absolute;top:16px;left:18px;color:#8b98a9;font-size:13px;font-variant-numeric:tabular-nums}
+      #swLb .swplay{justify-content:center;gap:14px}
+      #swLb .sw-play{background:#2563eb;color:#fff;border:none;padding:8px 18px;border-radius:8px;
+        font-weight:600;font-size:14px;cursor:pointer;min-width:92px}
+      #swLb .sw-play:hover{background:#1d4ed8}
+      #swLb #swScrub{width:min(60vw,560px);accent-color:#2563eb}
+      #swLb .sw-evbtn{background:rgba(255,255,255,.12);color:#e6edf3;border:1px solid #3a4658;
+        padding:7px 12px;border-radius:8px;font-size:13px;cursor:pointer}
+      #swLb .sw-evbtn:hover{background:rgba(255,255,255,.22)}
+      #pageSwitch .sw-badge{position:absolute;top:7px;left:7px;background:rgba(6,8,11,.72);color:#fff;
+        font-size:11px;padding:2px 7px;border-radius:6px;font-variant-numeric:tabular-nums}
+      #pageSwitch .sw-pbadge{position:absolute;top:7px;right:7px;font-size:11px;padding:2px 7px;
+        border-radius:6px;font-weight:600}
+      #pageSwitch .sw-pbadge.on{background:rgba(22,163,74,.92);color:#fff}
+      #pageSwitch .sw-pbadge.off{background:rgba(100,116,139,.85);color:#fff}
+      #pageSwitch .sw-card{position:relative}
+      #pageSwitch .sw-card.off{opacity:.62}
+      #pageSwitch .sw-seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+      #pageSwitch .sw-seg button{background:#fff;border:none;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--text)}
+      #pageSwitch .sw-seg button+button{border-left:1px solid var(--border)}
+      #pageSwitch .sw-seg button.on{background:var(--accent);color:#fff}
+    </style>
+    <div class="sw-controls">
+      <div class="sw-seg" id="swPathSeg">
+        <button data-p="on" class="on">진로상만</button>
+        <button data-p="off">진로상 아님</button>
+        <button data-p="all">전체</button>
+      </div>
+      <div class="sw-chips" id="swChips"></div>
+      <span style="flex:1"></span>
+      <select id="swRoute"><option value="">전체 노선</option></select>
+      <input id="swSearch" type="search" placeholder="검색 (노선/지역/영상ID)">
+      <span class="sw-count" id="swCount"></span>
+    </div>
+    <div class="sw-scroll">
+      <div class="sw-grid" id="swGrid"></div>
+      <div class="sw-empty" id="swEmpty" style="display:none">조건에 맞는 이벤트가 없습니다.</div>
+    </div>
+    <div id="swLb">
+      <button class="x" id="swClose">✕</button>
+      <div class="idx" id="swIdx"></div>
+      <button class="nav prev" id="swPrev">‹</button>
+      <button class="nav next" id="swNext">›</button>
+      <div class="imgwrap"><img id="swImg" alt=""></div>
+      <div class="bar">
+        <b id="swFlag"></b><span id="swTitle"></span>
+        <span class="mut" id="swFile"></span>
+        <span style="flex:1"></span>
+        <button id="swEvPrev" class="sw-evbtn" title="이전 이벤트">◀ 이벤트</button>
+        <button id="swEvNext" class="sw-evbtn" title="다음 이벤트">이벤트 ▶</button>
+        <a class="yt" id="swYt" target="_blank" rel="noopener">▶ 원본 영상 보기</a>
+      </div>
+      <div class="bar swplay">
+        <button id="swPlay" class="sw-play">▶ 재생</button>
+        <input type="range" id="swScrub" min="0" max="40" value="0" step="1">
+        <span class="mut" id="swOff" style="min-width:74px;text-align:right"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout" id="pageGhRepo" style="display:none; flex-direction:column; overflow:hidden;">
+    <style>
+      #pageGhRepo .gh-info{display:flex;align-items:center;gap:12px;padding:12px 16px;
+        border-bottom:1px solid var(--border);background:var(--panel);flex-wrap:wrap}
+      #pageGhRepo .gh-info h2{font-size:16px;margin:0;white-space:nowrap}
+      #pageGhRepo .gh-desc{color:var(--muted);font-size:13px}
+      #pageGhRepo .gh-stats{display:flex;gap:4px;font-size:13px;color:var(--muted);white-space:nowrap}
+      #pageGhRepo .gh-actions{margin-left:auto;display:flex;gap:8px}
+      #pageGhRepo .gh-actions button,#pageGhRepo .gh-actions a{font-size:13px;padding:6px 12px;
+        border-radius:8px;border:1px solid var(--border);background:#fff;color:var(--text);
+        text-decoration:none;cursor:pointer}
+      #pageGhRepo .gh-actions button:hover,#pageGhRepo .gh-actions a:hover{border-color:var(--accent)}
+      #pageGhRepo .gh-body{flex:1;display:flex;overflow:hidden}
+      #pageGhRepo .gh-tree{width:280px;flex:none;display:flex;flex-direction:column;
+        border-right:1px solid var(--border);background:var(--panel)}
+      #pageGhRepo .gh-tree-scroll{flex:1;overflow-y:auto;padding:10px;font-size:13px}
+      #pageGhRepo .gh-tree-actions{flex:none;padding:10px;border-top:1px solid var(--border)}
+      #pageGhRepo .gh-tree-actions button{width:100%;padding:8px;border-radius:8px;
+        border:1px solid var(--accent);background:var(--accent);color:#fff;font-size:13px;
+        font-weight:600;cursor:pointer}
+      #pageGhRepo .gh-node{cursor:pointer;padding:3px 6px;border-radius:5px;white-space:nowrap;
+        overflow:hidden;text-overflow:ellipsis}
+      #pageGhRepo .gh-node:hover{background:#eef1f5}
+      #pageGhRepo .gh-node.active{background:var(--accent);color:#fff}
+      #pageGhRepo .gh-dir{font-weight:600}
+      #pageGhRepo .gh-children{margin-left:14px}
+      #pageGhRepo .gh-content{flex:1;overflow-y:auto;padding:22px 30px}
+      #pageGhRepo .gh-filebar{font-size:12px;color:var(--muted);margin-bottom:12px;
+        display:flex;gap:10px;align-items:center;font-family:monospace}
+      #pageGhRepo .gh-content.md h1,#pageGhRepo .gh-content.md h2,#pageGhRepo .gh-content.md h3{
+        border-bottom:1px solid var(--border);padding-bottom:6px;margin-top:26px}
+      #pageGhRepo .gh-content.md h1{font-size:24px}
+      #pageGhRepo .gh-content.md h2{font-size:19px}
+      #pageGhRepo .gh-content.md h3{font-size:16px}
+      #pageGhRepo .gh-content.md p,#pageGhRepo .gh-content.md li{line-height:1.6}
+      #pageGhRepo .gh-content.md code{background:#eef1f5;padding:1px 5px;border-radius:4px;
+        font-family:monospace;font-size:12.5px}
+      #pageGhRepo .gh-content.md pre{background:#0d1117;color:#e6edf3;padding:14px 16px;
+        border-radius:8px;overflow-x:auto}
+      #pageGhRepo .gh-content.md pre code{background:none;padding:0;color:inherit}
+      #pageGhRepo .gh-content.md img{max-width:100%;border-radius:4px}
+      #pageGhRepo .gh-content.md table{border-collapse:collapse;margin:10px 0}
+      #pageGhRepo .gh-content.md th,#pageGhRepo .gh-content.md td{border:1px solid var(--border);
+        padding:6px 10px;font-size:13px}
+      #pageGhRepo .gh-content.md blockquote{border-left:3px solid var(--border);margin:10px 0;
+        padding:2px 14px;color:var(--muted)}
+      #pageGhRepo .gh-content pre{background:#0d1117;color:#e6edf3;padding:14px 16px;
+        border-radius:8px;overflow-x:auto;font-size:12.5px;line-height:1.5}
+      #pageGhRepo .gh-content>img{max-width:100%}
+      #pageGhRepo .mut{color:var(--muted);font-size:13px}
+      #pageGhRepo .gh-tree.hidden{display:none}
+      #pageGhRepo .gh-run{background:var(--panel);border:1px solid var(--border);border-radius:8px;
+        padding:12px 14px;margin-bottom:14px}
+      #pageGhRepo .gh-run .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+      #pageGhRepo .gh-run select,#pageGhRepo .gh-run input[type=number]{padding:5px 8px;
+        border:1px solid var(--border);border-radius:6px;font-size:13px}
+      #pageGhRepo .gh-run button{padding:6px 14px;border-radius:8px;border:1px solid var(--border);
+        background:var(--accent);color:#fff;font-size:13px;cursor:pointer}
+      #pageGhRepo .gh-run button.stop{background:#c62828}
+      #pageGhRepo .gh-run button:disabled{opacity:.5;cursor:default}
+      #pageGhRepo .gh-run-status{font-size:13px;color:var(--muted)}
+      #pageGhRepo .gh-run-log{background:#0d1117;color:#cdd6e0;font-family:monospace;font-size:11.5px;
+        padding:10px;border-radius:6px;max-height:220px;overflow-y:auto;white-space:pre-wrap;margin-top:8px}
+      #pageGhRepo .gh-run-images{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+      #pageGhRepo .gh-run-images img{max-width:260px;border-radius:6px;border:1px solid var(--border)}
+      #pageGhRepo .gh-run-single{margin-top:10px}
+      #pageGhRepo .gh-run-single-bar{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+      #pageGhRepo .gh-run-single-bar button{padding:4px 12px;border-radius:6px;border:1px solid var(--border);
+        background:#fff;cursor:pointer;font-size:14px}
+      #pageGhRepo #ghDtBatchStage{display:flex;gap:10px;min-height:120px}
+      #pageGhRepo #ghDtBatchStage img{max-width:440px;max-height:400px;border-radius:6px;
+        border:1px solid var(--border)}
+      #pageGhRepo .gh-run-thumbs{display:flex;gap:6px;overflow-x:auto;margin-top:10px;padding:4px 2px}
+      #pageGhRepo .gh-run-thumbs img{width:60px;height:34px;object-fit:cover;border-radius:4px;
+        cursor:pointer;border:2px solid transparent;flex:none}
+      #pageGhRepo .gh-run-thumbs img.active{border-color:var(--accent)}
+      #pageGhRepo .gh-run-thumbs img:focus{outline:2px solid var(--accent);outline-offset:1px}
+      #pageGhRepo .gh-runbtn{font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--accent);
+        background:#fff;color:var(--accent);cursor:pointer}
+      #pageGhRepo .gh-run .row label{font-size:12.5px;color:var(--muted);display:flex;
+        align-items:center;gap:5px}
+      #pageGhRepo .gh-run input[type=text],#pageGhRepo .gh-run input[type=file]{padding:5px 8px;
+        border:1px solid var(--border);border-radius:6px;font-size:13px}
+      #pageGhRepo .gh-run input[type=number].coord{width:64px}
+      #pageGhRepo .gh-run-result video{max-width:420px;border-radius:6px;border:1px solid var(--border)}
+      #pageGhRepo .gh-run-result{margin-top:10px}
+      #pageGhRepo .gh-seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+      #pageGhRepo .gh-seg button{background:#fff;border:none;padding:6px 12px;font-size:13px;
+        cursor:pointer;color:var(--text)}
+      #pageGhRepo .gh-seg button+button{border-left:1px solid var(--border)}
+      #pageGhRepo .gh-seg button.on{background:var(--accent);color:#fff}
+      #ghPickOverlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:60;display:none;
+        align-items:center;justify-content:center}
+      #ghPickOverlay.open{display:flex}
+      #ghPickOverlay .box{background:var(--panel);border-radius:10px;width:70%;max-width:760px;
+        height:70%;display:flex;flex-direction:column;overflow:hidden}
+      #ghPickOverlay .head{display:flex;justify-content:space-between;align-items:center;
+        padding:10px 14px;border-bottom:1px solid var(--border);gap:10px}
+      #ghPickOverlay .path{font-size:12px;color:var(--muted);font-family:monospace;flex:1;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      #ghPickOverlay .close{background:none;border:none;font-size:18px;cursor:pointer;color:var(--muted)}
+      #ghPickOverlay .list{flex:1;overflow-y:auto;padding:8px}
+      #ghPickOverlay .item{padding:6px 10px;border-radius:6px;cursor:pointer;font-size:13px;
+        display:flex;align-items:center;gap:8px}
+      #ghPickOverlay .item:hover{background:#eef1f5}
+      #ghPickOverlay .item.disabled{color:var(--muted);cursor:default}
+      #ghPickOverlay .item.disabled:hover{background:none}
+    </style>
+    <div class="gh-info">
+      <h2>🐙 irtrailenium/train-ego-path-detection</h2>
+      <span class="gh-desc" id="ghDesc"></span>
+      <span class="gh-stats" id="ghStats"></span>
+      <span class="gh-actions">
+        <button id="ghToggleTree">☰ 트리 숨기기</button>
+        <button id="ghRefresh">↻ 새로고침</button>
+        <a href="https://github.com/irtrailenium/train-ego-path-detection" target="_blank" rel="noopener">GitHub에서 보기 ↗</a>
+      </span>
+    </div>
+    <div class="gh-body">
+      <div class="gh-tree" id="ghTreeWrap">
+        <div class="gh-tree-scroll" id="ghTree"><div class="mut">로딩 중…</div></div>
+        <div class="gh-tree-actions">
+          <button id="ghDtStandaloneBtn">🔍 detect.py 실행</button>
+        </div>
+      </div>
+      <div class="gh-content" id="ghContent"><div class="mut">로딩 중…</div></div>
+    </div>
+    <div id="ghPickOverlay">
+      <div class="box">
+        <div class="head">
+          <span class="path" id="ghPickPath"></span>
+          <button id="ghPickFolder" class="gh-runbtn" style="white-space:nowrap">📂 이 폴더 전체 선택</button>
+          <button class="close" id="ghPickClose">✕</button>
+        </div>
+        <div class="list" id="ghPickList"></div>
+      </div>
     </div>
   </div>
 
@@ -1354,17 +1597,953 @@
     // ----- Tabs -----
     let trainOptionsLoaded = false;
     function showPage(which) {
-      const pages = { infer: "pageInfer", label: "pageLabel", train: "pageTrain", files: "pageFiles" };
-      const tabs = { infer: "tabInfer", label: "tabLabel", train: "tabTrain", files: "tabFiles" };
+      const pages = { infer: "pageInfer", label: "pageLabel", train: "pageTrain", files: "pageFiles", switch: "pageSwitch", ghrepo: "pageGhRepo" };
+      const tabs = { infer: "tabInfer", label: "tabLabel", train: "tabTrain", files: "tabFiles", switch: "tabSwitch", ghrepo: "tabGhRepo" };
       Object.entries(pages).forEach(([k, id]) => { $(id).style.display = k === which ? "flex" : "none"; });
       Object.entries(tabs).forEach(([k, id]) => { $(id).classList.toggle("active", k === which); });
       if (which === "train" && !trainOptionsLoaded) { loadTrainOptions(); trainOptionsLoaded = true; }
       if (which === "files" && !fbLoaded) { fbInit(); fbLoaded = true; }
+      if (which === "switch" && !swLoaded) { swInit(); swLoaded = true; }
+      if (which === "ghrepo" && !ghLoaded) { ghInit(); ghLoaded = true; }
     }
     $("tabInfer").onclick = () => showPage("infer");
     $("tabLabel").onclick = () => showPage("label");
     $("tabTrain").onclick = () => showPage("train");
     $("tabFiles").onclick = () => showPage("files");
+    $("tabSwitch").onclick = () => showPage("switch");
+    $("tabGhRepo").onclick = () => showPage("ghrepo");
+
+    // ----- 분기기 Switch 이미지 갤러리 -----
+    let swLoaded = false, SW = [], swView = [], swEv = 0;
+    let swFrames = [], swMan = {}, swCenter = 0, swFi = 0, swTimer = null;
+    const swState = { region: "", route: "", q: "", path: "on" };
+    function swInit() {
+      fetch("/api/switch/events").then(r => r.json()).then(d => {
+        SW = d;
+        swBuildChips();
+        swSyncRoutes();
+        $("swPathSeg").querySelectorAll("button").forEach(b => b.onclick = () => {
+          swState.path = b.dataset.p;
+          $("swPathSeg").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+          swSyncRoutes(); swBuildChips(); swRender();
+        });
+        $("swRoute").onchange = e => { swState.route = e.target.value; swRender(); };
+        $("swSearch").oninput = e => { swState.q = e.target.value.trim().toLowerCase(); swRender(); };
+        $("swClose").onclick = swCloseLb;
+        $("swPrev").onclick = () => swStepFrame(-1);
+        $("swNext").onclick = () => swStepFrame(1);
+        $("swEvPrev").onclick = () => swOpenEv(swEv - 1);
+        $("swEvNext").onclick = () => swOpenEv(swEv + 1);
+        $("swPlay").onclick = swTogglePlay;
+        $("swScrub").oninput = e => { swPause(); swSetFrame(+e.target.value); };
+        $("swLb").onclick = e => { if (e.target.id === "swLb") swCloseLb(); };
+        document.addEventListener("keydown", e => {
+          if (!$("swLb").classList.contains("open")) return;
+          if (e.key === "Escape") swCloseLb();
+          else if (e.key === "ArrowLeft") { swPause(); swStepFrame(-1); }
+          else if (e.key === "ArrowRight") { swPause(); swStepFrame(1); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); swOpenEv(swEv - 1); }
+          else if (e.key === "ArrowDown") { e.preventDefault(); swOpenEv(swEv + 1); }
+          else if (e.key === " ") { e.preventDefault(); swTogglePlay(); }
+        });
+        swRender();
+      }).catch(err => { $("swEmpty").style.display = "block";
+        $("swEmpty").textContent = "이벤트 로드 실패: " + err.message; });
+    }
+    function swPathOk(x) {
+      if (swState.path === "all") return true;
+      return swState.path === "on" ? x.onpath === true : x.onpath === false;
+    }
+    function swBuildChips() {
+      const byR = {}; SW.filter(swPathOk).forEach(x => byR[x.region] = (byR[x.region] || 0) + 1);
+      const chips = $("swChips"); chips.innerHTML = "";
+      const mk = (label, val, n, flag) => {
+        const c = document.createElement("span");
+        c.className = "sw-chip" + (val === swState.region ? " on" : "");
+        c.innerHTML = `${flag ? flag + " " : ""}${label} <span class="n">${n}</span>`;
+        c.dataset.val = val;
+        c.onclick = () => { swState.region = (swState.region === val ? "" : val); swState.route = "";
+          swSyncRoutes(); swRender();
+          chips.querySelectorAll(".sw-chip").forEach(e => e.classList.toggle("on", e.dataset.val === swState.region)); };
+        return c;
+      };
+      chips.appendChild(mk("전체", "", SW.length, ""));
+      Object.keys(byR).sort((a, b) => byR[b] - byR[a]).forEach(r => {
+        const flag = (SW.find(x => x.region === r) || {}).flag || "";
+        chips.appendChild(mk(r, r, byR[r], flag));
+      });
+    }
+    function swSyncRoutes() {
+      const sel = $("swRoute");
+      const pool = SW.filter(swPathOk).filter(x => !swState.region || x.region === swState.region);
+      const seen = new Map();
+      pool.forEach(x => { if (!seen.has(x.vid)) seen.set(x.vid, { title: x.title, flag: x.flag, n: 0 }); seen.get(x.vid).n++; });
+      sel.innerHTML = '<option value="">전체 노선</option>';
+      [...seen.entries()].sort((a, b) => b[1].n - a[1].n).forEach(([vid, o]) => {
+        const op = document.createElement("option");
+        op.value = vid; op.textContent = `${o.flag} ${o.title.slice(0, 46)} (${o.n}개 이벤트)`;
+        sel.appendChild(op);
+      });
+      swState.route = "";
+    }
+    function swRender() {
+      swView = SW.filter(x => {
+        if (!swPathOk(x)) return false;
+        if (swState.region && x.region !== swState.region) return false;
+        if (swState.route && x.vid !== swState.route) return false;
+        if (swState.q && !(x.title + " " + x.region + " " + x.vid + " " + x.event).toLowerCase().includes(swState.q)) return false;
+        return true;
+      });
+      const grid = $("swGrid"); grid.innerHTML = "";
+      $("swEmpty").style.display = swView.length ? "none" : "block";
+      const onN = SW.filter(x => x.onpath === true).length;
+      $("swCount").textContent = `${swView.length}개 이벤트 (진로상 ${onN}/${SW.length})`;
+      const frag = document.createDocumentFragment();
+      swView.forEach((x, i) => {
+        const c = document.createElement("div"); c.className = "sw-card" + (x.onpath === false ? " off" : "");
+        const thumb = x.center ? `/api/switch/ethumb/${encodeURIComponent(x.event)}/${encodeURIComponent(x.center)}` : "";
+        const evid = (x.event.split("__")[0] || "").toUpperCase();
+        const pb = x.onpath === true ? `<div class="sw-pbadge on" title="${(x.reason||'').replace(/"/g,'')}">진로상 ${x.confidence!=null?Math.round(x.confidence*100)+'%':''}</div>`
+                 : x.onpath === false ? `<div class="sw-pbadge off" title="${(x.reason||'').replace(/"/g,'')}">제외</div>` : "";
+        c.innerHTML = `<div class="sw-badge">${evid} · ${x.n_frames}컷</div>${pb}
+          <img loading="lazy" src="${thumb}" alt="">
+          <div class="sw-meta"><span class="r">${x.flag} ${x.region}</span><span class="s">▶ ${x.n_frames}</span></div>`;
+        c.onclick = () => swOpenEv(i);
+        frag.appendChild(c);
+      });
+      grid.appendChild(frag);
+    }
+    function swOpenEv(i) {
+      swPause();
+      if (i < 0) i = swView.length - 1;
+      if (i >= swView.length) i = 0;
+      swEv = i;
+      const x = swView[i];
+      $("swLb").classList.add("open");
+      $("swFlag").textContent = x.flag;
+      $("swTitle").textContent = x.title;
+      $("swImg").src = ""; $("swFile").textContent = "로딩…";
+      fetch("/api/switch/frames/" + encodeURIComponent(x.event)).then(r => r.json()).then(d => {
+        swFrames = d.frames || []; swMan = d.manifest || {};
+        // 중심 프레임 인덱스
+        swCenter = swFrames.indexOf(swMan.center_frame);
+        if (swCenter < 0) swCenter = Math.floor(swFrames.length / 2);
+        $("swScrub").max = Math.max(0, swFrames.length - 1);
+        swFrames.forEach(fn => { const im = new Image(); im.src = swFrameUrl(fn); }); // preload
+        swSetFrame(swCenter);
+      });
+    }
+    function swFrameUrl(fn) {
+      const x = swView[swEv];
+      return "/api/switch/frame/" + encodeURIComponent(x.event) + "/" + encodeURIComponent(fn);
+    }
+    function swSetFrame(fi) {
+      if (!swFrames.length) return;
+      swFi = (fi + swFrames.length) % swFrames.length;
+      const x = swView[swEv];
+      $("swImg").src = swFrameUrl(swFrames[swFi]);
+      $("swScrub").value = swFi;
+      const off = swFi - swCenter;                     // 1fps → 초 offset
+      const offTxt = off === 0 ? "t±0s" : (off > 0 ? `t+${off}s` : `t${off}s`);
+      $("swOff").textContent = offTxt + (swFi === swCenter ? " ◀대표" : "");
+      $("swFile").textContent = `${x.event}`;
+      $("swIdx").textContent = `이벤트 ${swEv + 1}/${swView.length} · 프레임 ${swFi + 1}/${swFrames.length}`;
+      // YouTube 링크: 현재 프레임의 원본 영상 시각으로
+      const base = (swMan.window && swMan.window.length) ? swMan.window[0] : (x.center_time || 0);
+      const t = Math.max(0, Math.round(base + swFi));
+      const sep = x.url.includes("?") ? "&" : "?";
+      $("swYt").href = x.url + sep + "t=" + t;
+    }
+    function swStepFrame(d) { swSetFrame(swFi + d); }
+    function swTogglePlay() { swTimer ? swPause() : swPlay(); }
+    function swPlay() {
+      if (!swFrames.length) return;
+      $("swPlay").textContent = "⏸ 정지";
+      swTimer = setInterval(() => { swSetFrame(swFi + 1 >= swFrames.length ? 0 : swFi + 1); }, 200);
+    }
+    function swPause() {
+      if (swTimer) { clearInterval(swTimer); swTimer = null; }
+      $("swPlay").textContent = "▶ 재생";
+    }
+    function swCloseLb() { swPause(); $("swLb").classList.remove("open"); }
+
+    // ----- GitHub 원본 저장소 뷰어 (irtrailenium/train-ego-path-detection) -----
+    let ghLoaded = false, GH_PATHS = new Set();
+    const GH_IMG_EXT = ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico"];
+
+    function ghInit() {
+      fetch("/api/ghrepo/info").then(r => r.json()).then(info => {
+        if (info.error) { $("ghStats").textContent = info.error; return; }
+        $("ghDesc").textContent = info.description || "";
+        const bits = [`⭐ ${info.stargazers_count}`, `🍴 ${info.forks_count}`, `🐛 ${info.open_issues_count} 이슈`];
+        if (info.language) bits.push(info.language);
+        if (info.license) bits.push(info.license);
+        $("ghStats").textContent = bits.join(" · ");
+      }).catch(() => { $("ghStats").textContent = "메타데이터 로드 실패"; });
+
+      fetch("/api/ghrepo/tree").then(r => r.json()).then(d => {
+        if (d.error) { $("ghTree").innerHTML = `<div class="mut">${d.error}</div>`; return; }
+        ghBuildTree(d.paths);
+        if (d.readme) ghOpenFile(d.readme);
+        else $("ghContent").innerHTML = '<div class="mut">README를 찾을 수 없습니다. 왼쪽 트리에서 파일을 선택하세요.</div>';
+      }).catch(err => { $("ghTree").innerHTML = `<div class="mut">트리 로드 실패: ${err.message}</div>`; });
+
+      $("ghRefresh").onclick = () => {
+        const btn = $("ghRefresh");
+        btn.disabled = true; btn.textContent = "새로고침 중…";
+        fetch("/api/ghrepo/refresh", { method: "POST" }).then(r => r.json()).then(d => {
+          btn.disabled = false; btn.textContent = "↻ 새로고침";
+          if (d.ok) ghInit(); else alert("새로고침 실패: " + (d.error || ""));
+        }).catch(err => { btn.disabled = false; btn.textContent = "↻ 새로고침"; alert("새로고침 실패: " + err.message); });
+      };
+      $("ghToggleTree").onclick = () => {
+        const tree = $("ghTreeWrap");
+        tree.classList.toggle("hidden");
+        $("ghToggleTree").textContent = tree.classList.contains("hidden") ? "☰ 트리 보기" : "☰ 트리 숨기기";
+      };
+      $("ghDtStandaloneBtn").onclick = () => ghShowDetectPanel();
+    }
+
+    function ghBuildTree(paths) {
+      GH_PATHS = new Set(paths);
+      const root = {};
+      paths.forEach(p => {
+        const parts = p.split("/");
+        let node = root;
+        parts.forEach((part, i) => {
+          if (i === parts.length - 1) {
+            (node.__files = node.__files || []).push({ name: part, path: p });
+          } else {
+            node[part] = node[part] || {};
+            node = node[part];
+          }
+        });
+      });
+      const container = $("ghTree");
+      container.innerHTML = "";
+      container.appendChild(ghRenderNode(root, 0));
+    }
+
+    function ghRenderNode(node, depth) {
+      const frag = document.createDocumentFragment();
+      Object.keys(node).filter(k => k !== "__files").sort().forEach(name => {
+        const wrap = document.createElement("div");
+        const label = document.createElement("div");
+        label.className = "gh-node gh-dir";
+        label.textContent = "📁 " + name;
+        const childWrap = document.createElement("div");
+        childWrap.className = "gh-children";
+        childWrap.style.display = "none";
+        childWrap.appendChild(ghRenderNode(node[name], depth + 1));
+        label.onclick = () => { childWrap.style.display = childWrap.style.display === "none" ? "block" : "none"; };
+        wrap.appendChild(label); wrap.appendChild(childWrap);
+        frag.appendChild(wrap);
+      });
+      (node.__files || []).sort((a, b) => a.name.localeCompare(b.name)).forEach(f => {
+        const el = document.createElement("div");
+        el.className = "gh-node gh-file";
+        el.textContent = "📄 " + f.name;
+        el.dataset.path = f.path;
+        el.onclick = () => ghOpenFile(f.path);
+        frag.appendChild(el);
+      });
+      return frag;
+    }
+
+    function ghMarkActive(path) {
+      $("ghTree").querySelectorAll(".gh-node").forEach(el => el.classList.toggle("active", el.dataset.path === path));
+    }
+
+    function ghResolvePath(baseDir, rel) {
+      const parts = (baseDir + rel).split("/");
+      const out = [];
+      for (const p of parts) {
+        if (p === "" || p === ".") continue;
+        if (p === "..") out.pop(); else out.push(p);
+      }
+      return out.join("/");
+    }
+
+    function ghOpenFile(path) {
+      ghMarkActive(path);
+      const ext = (path.split(".").pop() || "").toLowerCase();
+      const content = $("ghContent");
+      if (GH_IMG_EXT.includes(ext)) {
+        content.className = "gh-content";
+        content.innerHTML = `<div class="gh-filebar">${path}</div><img src="/api/ghrepo/file?path=${encodeURIComponent(path)}">`;
+        return;
+      }
+      content.innerHTML = '<div class="mut">로딩 중…</div>';
+      fetch("/api/ghrepo/file?path=" + encodeURIComponent(path)).then(r => r.json()).then(d => {
+        if (d.error) { content.innerHTML = `<div class="mut">${d.error}</div>`; return; }
+        const isMd = /\.(md|markdown)$/i.test(path);
+        const baseDir = path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
+        const trunc = d.truncated ? ` · (${Math.round(d.size / 1024)}KB, 앞부분만 표시)` : "";
+        const runnable = path === "demo.py" ? "demo" : path === "train.py" ? "train"
+          : path === "detect.py" ? "detect" : null;
+        const runBtn = runnable ? `<button class="gh-runbtn" id="ghRunBtn">▶ 이 스크립트 실행</button>` : "";
+        if (isMd && window.marked) {
+          const tmp = document.createElement("div");
+          tmp.innerHTML = marked.parse(d.content);
+          tmp.querySelectorAll("img[src]").forEach(img => {
+            const src = img.getAttribute("src");
+            if (src && !/^(https?:)?\/\//.test(src)) {
+              img.src = "/api/ghrepo/file?path=" + encodeURIComponent(ghResolvePath(baseDir, src));
+            }
+          });
+          tmp.querySelectorAll("a[href]").forEach(a => {
+            const href = a.getAttribute("href");
+            if (href && !/^(https?:)?\/\/|^#|^mailto:/.test(href)) {
+              const resolved = ghResolvePath(baseDir, href.split("#")[0]);
+              if (GH_PATHS.has(resolved)) {
+                a.href = "#";
+                a.onclick = (e) => { e.preventDefault(); ghOpenFile(resolved); };
+              }
+            }
+          });
+          content.className = "gh-content md";
+          content.innerHTML = `<div class="gh-filebar">${path}${trunc}</div>`;
+          content.appendChild(tmp);
+        } else {
+          content.className = "gh-content";
+          content.innerHTML = `<div class="gh-filebar">${path}${trunc}${runBtn}</div><div id="ghRunPanel"></div><pre><code></code></pre>`;
+          content.querySelector("code").textContent = d.content;
+        }
+        if (runnable) {
+          const btn = document.getElementById("ghRunBtn");
+          if (btn) btn.onclick = () => (
+            runnable === "demo" ? ghRunDemo() :
+            runnable === "train" ? ghShowTrainPanel() : ghShowDetectPanel()
+          );
+        }
+      }).catch(err => { content.innerHTML = `<div class="mut">파일 로드 실패: ${err.message}</div>`; });
+    }
+
+    // ----- demo.py / train.py 실행 -----
+    async function ghRunDemo() {
+      const panel = document.getElementById("ghRunPanel");
+      if (!panel) return;
+      panel.innerHTML = '<div class="gh-run"><div class="gh-run-status">실행 중… (최초 실행은 모델 로딩 때문에 다소 걸릴 수 있습니다)</div></div>';
+      try {
+        const r = await fetch("/api/ghrepo/run_demo", { method: "POST" });
+        const d = await r.json();
+        if (d.error) { panel.innerHTML = `<div class="gh-run"><div class="gh-run-status">오류: ${d.error}</div></div>`; return; }
+        const imgs = (d.images || []).map(im => `<div><div class="mut">${im.name}</div><img src="${im.data_url}"></div>`).join("");
+        panel.innerHTML = `<div class="gh-run">
+          <div class="gh-run-status">${d.ok ? "✅ 완료" : "⚠️ 종료 코드 " + d.returncode}</div>
+          <div class="gh-run-images">${imgs || '<span class="mut">생성된 이미지 없음</span>'}</div>
+          <div class="gh-run-log">${(d.log || "").replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]))}</div>
+        </div>`;
+      } catch (e) {
+        panel.innerHTML = `<div class="gh-run"><div class="gh-run-status">실행 실패: ${e.message}</div></div>`;
+      }
+    }
+
+    let ghTrainController = null;
+    function ghShowTrainPanel() {
+      const panel = document.getElementById("ghRunPanel");
+      if (!panel) return;
+      panel.innerHTML = `<div class="gh-run">
+        <div class="row">
+          <label>method <select id="ghTrMethod">
+            <option value="regression">regression</option>
+            <option value="classification">classification</option>
+            <option value="segmentation">segmentation</option>
+          </select></label>
+          <label>backbone <select id="ghTrBackbone">
+            <option value="resnet18">resnet18</option>
+            <option value="resnet34">resnet34</option>
+            <option value="resnet50">resnet50</option>
+            <option value="efficientnet-b0">efficientnet-b0</option>
+            <option value="efficientnet-b1">efficientnet-b1</option>
+            <option value="efficientnet-b2">efficientnet-b2</option>
+            <option value="efficientnet-b3">efficientnet-b3</option>
+          </select></label>
+          <label>epochs <input type="number" id="ghTrEpochs" value="50" min="1" style="width:70px"></label>
+          <select id="ghTrGpu"><option value="">GPU 자동</option></select>
+          <button id="ghTrStart">▶ 학습 시작</button>
+          <button id="ghTrStop" class="stop" style="display:none">■ 중지</button>
+        </div>
+        <div class="gh-run-status" id="ghTrStatus">이 저장소의 train.py와 같은 기본 모드(RNN 아님, 처음부터 학습)로 실행합니다. 학습 탭과 GPU 프로세스를 공유합니다.</div>
+        <div class="gh-run-log" id="ghTrLog" style="display:none"></div>
+      </div>`;
+      fetch("/api/train/options").then(r => r.json()).then(d => {
+        const sel = document.getElementById("ghTrGpu");
+        (d.gpus || []).forEach(g => {
+          const op = document.createElement("option");
+          op.value = g.uuid; op.textContent = `GPU ${g.index} (${g.mem_used}MB 사용중)`;
+          sel.appendChild(op);
+        });
+      }).catch(() => {});
+      document.getElementById("ghTrStart").onclick = ghStartTrain;
+      document.getElementById("ghTrStop").onclick = ghStopTrain;
+      ghCheckTrainStatus();
+    }
+
+    async function ghCheckTrainStatus() {
+      try {
+        const s = await (await fetch("/api/train/status")).json();
+        if (s.running) { ghSetTrainBusy(true); ghStreamTrain(); }
+      } catch (_) {}
+    }
+
+    function ghSetTrainBusy(busy) {
+      const start = document.getElementById("ghTrStart"), stop = document.getElementById("ghTrStop");
+      if (start) start.style.display = busy ? "none" : "";
+      if (stop) stop.style.display = busy ? "" : "none";
+    }
+
+    function ghStreamTrain() {
+      const logEl = document.getElementById("ghTrLog");
+      const statusEl = document.getElementById("ghTrStatus");
+      if (logEl) logEl.style.display = "block";
+      ghTrainController = new AbortController();
+      fetch("/api/train/stream", { signal: ghTrainController.signal }).then(async (res) => {
+        if (!res.ok) { ghSetTrainBusy(false); return; }
+        const reader = res.body.getReader(); const dec = new TextDecoder();
+        let buf = "", li = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf("\n\n", li)) >= 0) {
+            const chunk = buf.slice(li, idx).trim(); li = idx + 2;
+            if (!chunk.startsWith("data:")) continue;
+            let m; try { m = JSON.parse(chunk.slice(5).trim()); } catch (_) { continue; }
+            if (!logEl) continue;
+            if (m.type === "epoch") {
+              logEl.textContent += `EPOCH ${m.epoch}/${m.total} | train ${m.train_loss.toFixed(4)} | val ${m.val_loss.toFixed(4)}\n`;
+            } else if (m.type === "log") {
+              logEl.textContent += m.line + "\n";
+            } else if (m.type === "done") {
+              if (statusEl) statusEl.textContent = m.code === 0 ? "✅ 학습 완료" : `학습 종료 (code ${m.code})`;
+              ghSetTrainBusy(false);
+            }
+            logEl.scrollTop = logEl.scrollHeight;
+          }
+          buf = buf.slice(li); li = 0;
+        }
+      }).catch((e) => { if (e.name !== "AbortError") ghSetTrainBusy(false); });
+    }
+
+    async function ghStartTrain() {
+      const statusEl = document.getElementById("ghTrStatus");
+      const logEl = document.getElementById("ghTrLog");
+      ghSetTrainBusy(true);
+      if (logEl) { logEl.textContent = ""; logEl.style.display = "block"; }
+      statusEl.textContent = "시작 중…";
+      const fd = new FormData();
+      fd.append("method", document.getElementById("ghTrMethod").value);
+      fd.append("backbone", document.getElementById("ghTrBackbone").value);
+      fd.append("epochs", document.getElementById("ghTrEpochs").value);
+      fd.append("gpu_uuid", document.getElementById("ghTrGpu").value);
+      try {
+        const res = await fetch("/api/ghrepo/run_train", { method: "POST", body: fd });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error || "시작 실패");
+        statusEl.textContent = "학습 시작됨: " + d.cmd;
+        ghStreamTrain();
+      } catch (e) {
+        statusEl.textContent = "오류: " + e.message;
+        ghSetTrainBusy(false);
+      }
+    }
+
+    async function ghStopTrain() {
+      const statusEl = document.getElementById("ghTrStatus");
+      statusEl.textContent = "중지 중…";
+      if (ghTrainController) ghTrainController.abort();
+      try { await fetch("/api/train/stop", { method: "POST" }); } catch (_) {}
+      ghSetTrainBusy(false);
+      statusEl.textContent = "중지됨";
+    }
+
+    function ghEnsureRunPanel() {
+      // detect.py 실행 패널은 (1) 트리에서 detect.py를 열어서, (2) 트리 아래
+      // 고정 버튼으로 — 두 경로 모두로 들어올 수 있다. (2)는 #ghRunPanel이
+      // 아직 없으므로(파일 뷰어가 만든 게 아니라서) #ghContent를 통째로
+      // 이 패널로 교체해 컨테이너를 만들어준다.
+      let panel = document.getElementById("ghRunPanel");
+      if (!panel) {
+        const content = document.getElementById("ghContent");
+        content.className = "gh-content";
+        content.innerHTML = '<div class="gh-filebar">detect.py</div><div id="ghRunPanel"></div>';
+        ghMarkActive("detect.py");
+        panel = document.getElementById("ghRunPanel");
+      }
+      return panel;
+    }
+
+    function ghShowDetectPanel() {
+      const panel = ghEnsureRunPanel();
+      if (!panel) return;
+      panel.innerHTML = `<div class="gh-run">
+        <div class="row">
+          <label>모델 <select id="ghDtModel"><option value="">불러오는 중…</option></select></label>
+          <label><input type="checkbox" id="ghDtCompare"> 🆚 기존 모델과 RNN 모델 비교 (★ 표시된 모델만 가능)</label>
+        </div>
+        <div class="row">
+          <div class="gh-seg" id="ghDtSrcSeg">
+            <button type="button" data-src="upload">업로드</button>
+            <button type="button" data-src="server" class="on">서버 파일</button>
+          </div>
+          <span id="ghDtUploadWrap" style="display:none"><input type="file" id="ghDtFile" accept="image/*,video/*"></span>
+          <span id="ghDtServerWrap">
+            <input type="text" id="ghDtServerPath" placeholder="서버 파일 경로 (최근 사용 목록에서 선택 가능)"
+                   list="ghDtRecentPaths" style="width:320px" autocomplete="off">
+            <datalist id="ghDtRecentPaths"></datalist>
+            <button type="button" id="ghDtBrowse">📁 찾아보기</button>
+          </span>
+        </div>
+        <div class="row">
+          <label>크롭 <select id="ghDtCrop">
+            <option value="auto">auto (자동)</option>
+            <option value="none">none (사용 안 함)</option>
+            <option value="manual">manual (직접 지정)</option>
+          </select></label>
+          <span id="ghDtCropCoords" style="display:none">
+            <input type="number" class="coord" id="ghDtCropL" placeholder="left" value="0">
+            <input type="number" class="coord" id="ghDtCropT" placeholder="top" value="0">
+            <input type="number" class="coord" id="ghDtCropR" placeholder="right" value="0">
+            <input type="number" class="coord" id="ghDtCropB" placeholder="bottom" value="0">
+          </span>
+          <label><input type="checkbox" id="ghDtShowCrop"> 크롭 영역 표시</label>
+        </div>
+        <div class="row" id="ghDtStartRow">
+          <label>시작(초) <input type="number" class="coord" id="ghDtStart" value="0" min="0"></label>
+          <label>종료(초, 비디오만) <input type="number" class="coord" id="ghDtEnd" placeholder="끝까지"></label>
+        </div>
+        <div class="row">
+          <label>장비 <select id="ghDtDevice"><option value="">CPU</option></select></label>
+        </div>
+        <div class="row" id="ghDtOutputRow">
+          <label>출력 경로(선택, 서버 디렉터리에 사본 저장) <input type="text" id="ghDtOutput" placeholder="비워두면 저장 안 함" style="width:260px"></label>
+        </div>
+        <div class="row">
+          <button id="ghDtRun">▶ 추론 실행</button>
+        </div>
+        <div class="gh-run-status" id="ghDtStatus">detect.py를 그대로 실행합니다 (모델·파일·크롭·구간·크롭표시·장비 전부 실제 CLI 옵션).</div>
+        <div class="gh-run-result" id="ghDtResult"></div>
+      </div>`;
+      ghDtModelsInfo = {};
+      fetch("/api/info").then(r => r.json()).then(d => {
+        const sel = document.getElementById("ghDtModel");
+        sel.innerHTML = "";
+        (d.models || []).filter(m => m.base_path).forEach(m => {
+          ghDtModelsInfo[m.name] = m;
+          const op = document.createElement("option");
+          op.value = m.name; op.textContent = m.name + (m.rnn_path ? " ★RNN" : "");
+          sel.appendChild(op);
+        });
+        if (!sel.children.length) sel.innerHTML = '<option value="">사용 가능한 모델 없음</option>';
+      }).catch(() => {});
+      ghDtGpuOpts = [];
+      fetch("/api/train/options").then(r => r.json()).then(d => {
+        ghDtGpuOpts = (d.gpus || []).map(g => ({ value: g.uuid, label: `GPU ${g.index} (${g.mem_used}MB 사용중)` }));
+        ghDtSyncFolderUI();
+      }).catch(() => {});
+      ghDtInProcOpts = [{ value: "cpu", label: "CPU" }];
+      fetch("/api/info").then(r => r.json()).then(d => {
+        ghDtInProcOpts = (d.devices || ["cpu"]).filter(x => x === "cpu" || /^cuda:\d+$/.test(x))
+          .map(x => ({ value: x, label: x === "cpu" ? "CPU" : x.toUpperCase() }));
+        ghDtSyncFolderUI();
+      }).catch(() => {});
+      document.getElementById("ghDtCrop").onchange = (e) => {
+        document.getElementById("ghDtCropCoords").style.display = e.target.value === "manual" ? "inline-flex" : "none";
+      };
+      document.getElementById("ghDtRun").onclick = ghRunDetect;
+      document.getElementById("ghDtSrcSeg").querySelectorAll("button").forEach(b => {
+        b.onclick = () => {
+          document.getElementById("ghDtSrcSeg").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+          const isServer = b.dataset.src === "server";
+          document.getElementById("ghDtUploadWrap").style.display = isServer ? "none" : "";
+          document.getElementById("ghDtServerWrap").style.display = isServer ? "" : "none";
+          if (!isServer) { ghDtServerIsFolder = false; ghDtSyncFolderUI(); }
+        };
+      });
+      document.getElementById("ghDtBrowse").onclick = () => ghPickOpen();
+      document.getElementById("ghDtServerPath").oninput = () => {
+        // 사용자가 직접 타이핑/붙여넣기한 경우에만 반응한다 — 피커가 프로그램
+        // 적으로 .value를 채울 때는 input 이벤트가 안 뜨므로 여기 안 걸린다.
+        ghDtServerIsFolder = false;
+        ghDtSyncFolderUI();
+      };
+      ghDtRefreshRecentPaths();
+      ghDtServerIsFolder = false;
+      ghDtSyncFolderUI();
+    }
+
+    // ----- 서버 경로 입력창의 "최근 사용" 목록 (브라우저 localStorage) -----
+    const GH_RECENT_KEY = "ghDtRecentServerPaths";
+    function ghDtLoadRecentPaths() {
+      try { return JSON.parse(localStorage.getItem(GH_RECENT_KEY) || "[]"); }
+      catch (_) { return []; }
+    }
+    function ghDtRefreshRecentPaths() {
+      const dl = document.getElementById("ghDtRecentPaths");
+      if (!dl) return;
+      dl.innerHTML = "";
+      ghDtLoadRecentPaths().forEach(p => {
+        const op = document.createElement("option");
+        op.value = p;
+        dl.appendChild(op);
+      });
+    }
+    function ghDtSaveRecentPath(path) {
+      if (!path) return;
+      const list = ghDtLoadRecentPaths().filter(p => p !== path);
+      list.unshift(path);
+      try { localStorage.setItem(GH_RECENT_KEY, JSON.stringify(list.slice(0, 12))); } catch (_) {}
+      ghDtRefreshRecentPaths();
+    }
+
+    // ----- 서버 파일 선택 모달 (Laurent 원본 탭의 detect.py 입력용, /api/browse 재사용) -----
+    const GH_MEDIA_RE = /\.(jpg|jpeg|png|bmp|tif|tiff|mp4|avi)$/i;
+    let ghDtServerIsFolder = false, ghPickCurPath = null, ghDtGpuOpts = [], ghDtInProcOpts = [], ghDtModelsInfo = {};
+    function ghPickOpen(path) {
+      document.getElementById("ghPickOverlay").classList.add("open");
+      ghPickLoad(path);
+    }
+    function ghPickClose() {
+      document.getElementById("ghPickOverlay").classList.remove("open");
+    }
+    async function ghPickLoad(path) {
+      const listEl = document.getElementById("ghPickList");
+      listEl.innerHTML = '<div class="mut" style="padding:10px">로딩 중…</div>';
+      try {
+        const url = "/api/browse" + (path ? `?path=${encodeURIComponent(path)}` : "");
+        const d = await (await fetch(url)).json();
+        if (!d.ok) { listEl.innerHTML = `<div class="mut" style="padding:10px">${d.error || "탐색 실패"}</div>`; return; }
+        document.getElementById("ghPickPath").textContent = d.path;
+        ghPickCurPath = d.path;
+        document.getElementById("ghPickFolder").textContent =
+          `📂 이 폴더 전체 선택 (이미지 ${d.images}장)`;
+        listEl.innerHTML = "";
+        if (d.parent !== null && d.parent !== undefined) {
+          const up = document.createElement("div");
+          up.className = "item"; up.textContent = "⬆ 상위 폴더";
+          up.onclick = () => ghPickLoad(d.parent);
+          listEl.appendChild(up);
+        }
+        d.dirs.forEach(dir => {
+          const el = document.createElement("div");
+          el.className = "item";
+          el.textContent = `📁 ${dir.name}` + (dir.images ? ` (이미지 ${dir.images}장)` : "");
+          el.onclick = () => ghPickLoad(dir.path);
+          listEl.appendChild(el);
+        });
+        d.files.forEach(f => {
+          const usable = GH_MEDIA_RE.test(f.name);
+          const el = document.createElement("div");
+          el.className = "item" + (usable ? "" : " disabled");
+          el.textContent = `${usable ? "🖼️" : "📄"} ${f.name}`;
+          if (usable) {
+            el.onclick = () => {
+              document.getElementById("ghDtServerPath").value = f.path;
+              ghDtServerIsFolder = false;
+              ghDtSyncFolderUI();
+              ghDtSaveRecentPath(f.path);
+              ghPickClose();
+            };
+          }
+          listEl.appendChild(el);
+        });
+        if (!d.dirs.length && !d.files.length) {
+          listEl.innerHTML += '<div class="mut" style="padding:10px">비어 있음</div>';
+        }
+      } catch (e) {
+        listEl.innerHTML = `<div class="mut" style="padding:10px">오류: ${e.message}</div>`;
+      }
+    }
+    document.getElementById("ghPickClose").onclick = ghPickClose;
+    document.getElementById("ghPickOverlay").onclick = (e) => { if (e.target.id === "ghPickOverlay") ghPickClose(); };
+    document.getElementById("ghPickFolder").onclick = () => {
+      if (!ghPickCurPath) return;
+      document.getElementById("ghDtServerPath").value = ghPickCurPath;
+      ghDtServerIsFolder = true;
+      ghDtSyncFolderUI();
+      ghDtSaveRecentPath(ghPickCurPath);
+      ghPickClose();
+    };
+
+    // 폴더가 선택되면 비디오 전용 옵션(시작/종료초)을 숨기고 실행 버튼을
+    // "폴더 일괄 추론"으로 바꾼다.
+    function ghDtSyncFolderUI() {
+      const startRow = document.getElementById("ghDtStartRow");
+      const runBtn = document.getElementById("ghDtRun");
+      if (startRow) startRow.style.display = ghDtServerIsFolder ? "none" : "";
+      if (runBtn) runBtn.textContent = ghDtServerIsFolder ? "▶ 폴더 일괄 추론 시작" : "▶ 추론 실행";
+      // 폴더 모드는 이 웹서버 프로세스 안에서 모델을 한 번만 로딩해 돌리므로
+      // (그래야 이미지마다 재시작하는 느린 방식을 피할 수 있다) 이 프로세스가
+      // 이미 물려 있는 GPU만 고를 수 있다. 단일 파일 모드는 detect.py를 별도
+      // 프로세스로 실행하므로 물리 GPU를 자유롭게 고를 수 있다.
+      const sel = document.getElementById("ghDtDevice");
+      if (sel) {
+        const opts = ghDtServerIsFolder ? (ghDtInProcOpts || []) : (ghDtGpuOpts || []);
+        const prev = sel.value;
+        sel.innerHTML = ghDtServerIsFolder ? "" : '<option value="">CPU</option>';
+        opts.forEach(o => {
+          const op = document.createElement("option");
+          op.value = o.value; op.textContent = o.label;
+          sel.appendChild(op);
+        });
+        if (prev && [...sel.options].some(o => o.value === prev)) {
+          sel.value = prev;
+        } else {
+          // 기본값은 CPU가 아니라 GPU — 첫 번째로 잡히는 CUDA 장비를 고른다.
+          const gpuOpt = opts.find(o => o.value && o.value !== "cpu");
+          if (gpuOpt) sel.value = gpuOpt.value;
+        }
+      }
+    }
+
+    async function ghRunDetect() {
+      const statusEl = document.getElementById("ghDtStatus");
+      const resultEl = document.getElementById("ghDtResult");
+      const fileInput = document.getElementById("ghDtFile");
+      const serverPath = document.getElementById("ghDtServerPath").value.trim();
+      const useServer = document.querySelector("#ghDtSrcSeg button.on").dataset.src === "server";
+      const model = document.getElementById("ghDtModel").value;
+      if (!model) { statusEl.textContent = "모델을 선택하세요."; return; }
+      if (useServer && !serverPath) { statusEl.textContent = "서버 파일을 선택하세요."; return; }
+      if (!useServer && !fileInput.files.length) { statusEl.textContent = "입력 파일을 선택하세요."; return; }
+      const compare = document.getElementById("ghDtCompare").checked;
+      if (compare && !(ghDtModelsInfo[model] || {}).rnn_path) {
+        statusEl.textContent = `'${model}'에는 RNN 버전이 없어 비교할 수 없습니다.`; return;
+      }
+      if (useServer && ghDtServerIsFolder) { return ghRunDetectBatch(serverPath, model, compare); }
+      if (compare) { return ghRunDetectCompare(useServer ? serverPath : null, useServer ? null : fileInput.files[0], model); }
+
+      const fd = new FormData();
+      fd.append("model", model);
+      if (useServer) fd.append("server_path", serverPath);
+      else fd.append("file", fileInput.files[0]);
+      fd.append("crop_mode", document.getElementById("ghDtCrop").value);
+      fd.append("crop_left", document.getElementById("ghDtCropL").value);
+      fd.append("crop_top", document.getElementById("ghDtCropT").value);
+      fd.append("crop_right", document.getElementById("ghDtCropR").value);
+      fd.append("crop_bottom", document.getElementById("ghDtCropB").value);
+      fd.append("show_crop", document.getElementById("ghDtShowCrop").checked ? "true" : "false");
+      fd.append("start", document.getElementById("ghDtStart").value || "0");
+      fd.append("end", document.getElementById("ghDtEnd").value || "");
+      fd.append("output", document.getElementById("ghDtOutput").value.trim());
+      fd.append("gpu_uuid", document.getElementById("ghDtDevice").value);
+
+      const btn = document.getElementById("ghDtRun");
+      btn.disabled = true;
+      statusEl.textContent = "실행 중… (비디오는 길이에 따라 오래 걸릴 수 있습니다)";
+      resultEl.innerHTML = "";
+      try {
+        const r = await fetch("/api/ghrepo/run_detect", { method: "POST", body: fd });
+        const d = await r.json();
+        btn.disabled = false;
+        if (d.error) { statusEl.textContent = "오류: " + d.error; return; }
+        if (!d.ok) {
+          statusEl.textContent = `⚠️ 종료 코드 ${d.returncode}`;
+          resultEl.innerHTML = `<div class="gh-run-log">${(d.log || "").replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]))}</div>`;
+          return;
+        }
+        statusEl.textContent = "✅ 완료 — $ " + d.cmd;
+        const media = d.result.kind === "video"
+          ? `<video src="${d.result.url}" controls></video>`
+          : `<img src="${d.result.data_url}">`;
+        resultEl.innerHTML = `${media}<div class="gh-run-log">${(d.log || "").replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]))}</div>`;
+        if (useServer) ghDtSaveRecentPath(serverPath);
+      } catch (e) {
+        btn.disabled = false;
+        statusEl.textContent = "실행 실패: " + e.message;
+      }
+    }
+
+    async function ghRunDetectCompare(serverPath, file, model) {
+      const statusEl = document.getElementById("ghDtStatus");
+      const resultEl = document.getElementById("ghDtResult");
+      const btn = document.getElementById("ghDtRun");
+
+      const fd = new FormData();
+      fd.append("model", model);
+      if (serverPath) fd.append("server_path", serverPath);
+      else fd.append("file", file);
+      fd.append("crop_mode", document.getElementById("ghDtCrop").value);
+      fd.append("crop_left", document.getElementById("ghDtCropL").value);
+      fd.append("crop_top", document.getElementById("ghDtCropT").value);
+      fd.append("crop_right", document.getElementById("ghDtCropR").value);
+      fd.append("crop_bottom", document.getElementById("ghDtCropB").value);
+      fd.append("device", document.getElementById("ghDtDevice").value || "cpu");
+
+      btn.disabled = true;
+      statusEl.textContent = "비교 실행 중… (이미지 전용, 모델 두 개를 각각 돌립니다)";
+      resultEl.innerHTML = "";
+      try {
+        const r = await fetch("/api/ghrepo/run_detect_compare", { method: "POST", body: fd });
+        const d = await r.json();
+        btn.disabled = false;
+        if (d.error) { statusEl.textContent = "오류: " + d.error; return; }
+        const t = d.timing || {};
+        statusEl.textContent = "✅ 완료";
+        resultEl.innerHTML = `
+          <div class="gh-run-images">
+            <div><div class="mut">기존 모델 (${t.single_ms != null ? t.single_ms + "ms" : "-"})</div><img src="${d.single}"></div>
+            <div><div class="mut">RNN 모델 (${t.rnn_ms != null ? t.rnn_ms + "ms" : "-"})</div><img src="${d.rnn}"></div>
+          </div>`;
+        if (serverPath) ghDtSaveRecentPath(serverPath);
+      } catch (e) {
+        btn.disabled = false;
+        statusEl.textContent = "실행 실패: " + e.message;
+      }
+    }
+
+    let ghDtBatchPoll = null;
+    async function ghRunDetectBatch(folder, model, compare) {
+      const statusEl = document.getElementById("ghDtStatus");
+      const resultEl = document.getElementById("ghDtResult");
+      const btn = document.getElementById("ghDtRun");
+
+      const fd = new FormData();
+      fd.append("model", model);
+      fd.append("folder", folder);
+      fd.append("compare", compare ? "true" : "false");
+      fd.append("crop_mode", document.getElementById("ghDtCrop").value);
+      fd.append("crop_left", document.getElementById("ghDtCropL").value);
+      fd.append("crop_top", document.getElementById("ghDtCropT").value);
+      fd.append("crop_right", document.getElementById("ghDtCropR").value);
+      fd.append("crop_bottom", document.getElementById("ghDtCropB").value);
+      fd.append("show_crop", document.getElementById("ghDtShowCrop").checked ? "true" : "false");
+      fd.append("device", document.getElementById("ghDtDevice").value || "cpu");
+
+      btn.disabled = true;
+      statusEl.textContent = "폴더 확인 중…";
+      resultEl.innerHTML = `
+        <div class="row"><progress id="ghDtProg" value="0" max="1" style="width:260px"></progress>
+          <span id="ghDtProgText" class="mut"></span>
+          <button type="button" id="ghDtBatchStop">■ 중지</button></div>
+        <div class="gh-run-single">
+          <div class="gh-run-single-bar">
+            <button type="button" id="ghDtBatchPrev">‹</button>
+            <span id="ghDtBatchPos" class="mut">-</span>
+            <button type="button" id="ghDtBatchNext">›</button>
+            <label style="margin-left:auto;font-size:12px">
+              <input type="checkbox" id="ghDtBatchFollow" checked> 최신 결과 자동 표시</label>
+          </div>
+          <div id="ghDtBatchStage"><div class="mut">처리를 기다리는 중…</div></div>
+          <div class="gh-run-thumbs" id="ghDtBatchThumbs"></div>
+        </div>
+        <div class="gh-run-log" id="ghDtBatchLog" style="display:none"></div>`;
+      document.getElementById("ghDtBatchStop").onclick = async () => {
+        await fetch("/api/ghrepo/detect_batch_stop", { method: "POST" }).catch(() => {});
+      };
+      document.getElementById("ghDtBatchPrev").onclick = () => ghDtStepBatch(-1);
+      document.getElementById("ghDtBatchNext").onclick = () => ghDtStepBatch(1);
+      // 썸네일을 클릭해 포커스를 준 다음에는 ←/→ 화살표로 계속 넘길 수 있다
+      // (키다운은 포커스된 <img>에서 이 컨테이너로 버블링되어 여기서 한 번에 처리).
+      document.getElementById("ghDtBatchThumbs").addEventListener("keydown", (e) => {
+        if (e.key === "ArrowLeft") { e.preventDefault(); ghDtStepBatch(-1); }
+        else if (e.key === "ArrowRight") { e.preventDefault(); ghDtStepBatch(1); }
+      });
+
+      try {
+        const r = await fetch("/api/ghrepo/run_detect_batch", { method: "POST", body: fd });
+        const d = await r.json();
+        if (d.error) { statusEl.textContent = "오류: " + d.error; btn.disabled = false; return; }
+        statusEl.textContent = `실행 중… (이미지 ${d.total}장)`;
+        ghDtSaveRecentPath(folder);
+        ghDtPollBatch();
+      } catch (e) {
+        statusEl.textContent = "실행 실패: " + e.message;
+        btn.disabled = false;
+      }
+    }
+
+    // 폴더 일괄 추론 결과를 목록으로 쌓지 않고, 고정된 한 위치(스테이지)에서
+    // 최신 결과로 계속 갱신해서 보여준다. 완료된 것들은 아래 썸네일 줄로
+    // 훑어볼 수 있다.
+    let ghDtBatchResults = [], ghDtBatchIdx = -1;
+
+    function ghDtRenderBatchStage() {
+      const stage = document.getElementById("ghDtBatchStage");
+      const pos = document.getElementById("ghDtBatchPos");
+      if (!stage) return;
+      const total = ghDtBatchResults.length;
+      if (!total) { stage.innerHTML = '<div class="mut">처리를 기다리는 중…</div>'; if (pos) pos.textContent = "-"; return; }
+      if (ghDtBatchIdx < 0) ghDtBatchIdx = 0;
+      if (ghDtBatchIdx >= total) ghDtBatchIdx = total - 1;
+      const res = ghDtBatchResults[ghDtBatchIdx];
+      if (pos) pos.textContent = `${ghDtBatchIdx + 1}/${total}`;
+      if (res.existing_url) {
+        const t = res.timing || {};
+        stage.innerHTML = `
+          <div><div class="mut">${res.name} · 기존 (${t.single_ms != null ? t.single_ms + "ms" : "-"})</div><img src="${res.existing_url}"></div>
+          <div><div class="mut">${res.name} · RNN (${t.rnn_ms != null ? t.rnn_ms + "ms" : "-"})</div><img src="${res.rnn_url}"></div>`;
+      } else {
+        stage.innerHTML = `<div><div class="mut">${res.name}</div><img src="${res.url}"></div>`;
+      }
+      document.querySelectorAll("#ghDtBatchThumbs img").forEach((el, i) => el.classList.toggle("active", i === ghDtBatchIdx));
+    }
+
+    function ghDtAppendThumb(res, idx) {
+      const thumbs = document.getElementById("ghDtBatchThumbs");
+      if (!thumbs) return;
+      const img = document.createElement("img");
+      img.src = res.existing_url || res.url;
+      img.title = res.name;
+      img.tabIndex = 0;  // 클릭으로 포커스를 줘야 그 다음 키보드 화살표가 먹는다
+      img.onclick = () => {
+        document.getElementById("ghDtBatchFollow").checked = false;
+        ghDtBatchIdx = idx;
+        ghDtRenderBatchStage();
+        img.focus({ preventScroll: true });
+      };
+      thumbs.appendChild(img);
+    }
+
+    // 썸네일 하나를 클릭(포커스)한 뒤 ←/→ 로 이전·다음 결과로 넘어간다.
+    function ghDtStepBatch(delta) {
+      if (!ghDtBatchResults.length) return;
+      document.getElementById("ghDtBatchFollow").checked = false;
+      ghDtBatchIdx = Math.max(0, Math.min(ghDtBatchResults.length - 1, ghDtBatchIdx + delta));
+      ghDtRenderBatchStage();
+      const thumbs = document.getElementById("ghDtBatchThumbs");
+      const el = thumbs && thumbs.children[ghDtBatchIdx];
+      if (el) { el.focus({ preventScroll: true }); el.scrollIntoView({ block: "nearest", inline: "nearest" }); }
+    }
+
+    function ghDtPollBatch() {
+      if (ghDtBatchPoll) clearInterval(ghDtBatchPoll);
+      ghDtBatchResults = []; ghDtBatchIdx = -1;
+      const shown = new Set();
+      ghDtBatchPoll = setInterval(async () => {
+        let s;
+        try { s = await (await fetch("/api/ghrepo/detect_batch_status")).json(); }
+        catch (_) { return; }
+        const prog = document.getElementById("ghDtProg");
+        const progText = document.getElementById("ghDtProgText");
+        const logEl = document.getElementById("ghDtBatchLog");
+        if (!prog) { clearInterval(ghDtBatchPoll); return; }
+        prog.max = s.total || 1; prog.value = s.done || 0;
+        progText.textContent = `${s.done}/${s.total}`;
+        let addedNew = false;
+        (s.results || []).forEach(res => {
+          const key = res.url || res.existing_url;
+          if (shown.has(key)) return;
+          shown.add(key);
+          ghDtBatchResults.push(res);
+          ghDtAppendThumb(res, ghDtBatchResults.length - 1);
+          addedNew = true;
+        });
+        if (addedNew && document.getElementById("ghDtBatchFollow").checked) {
+          ghDtBatchIdx = ghDtBatchResults.length - 1;
+        }
+        if (addedNew) ghDtRenderBatchStage();
+        if (s.log) { logEl.style.display = "block"; logEl.textContent = s.log; }
+        if (!s.running) {
+          clearInterval(ghDtBatchPoll); ghDtBatchPoll = null;
+          document.getElementById("ghDtRun").disabled = false;
+          document.getElementById("ghDtStatus").textContent =
+            `✅ 완료 (${s.done}/${s.total}, 성공 ${(s.results || []).length}건)`;
+        }
+      }, 1200);
+    }
 
     // ----- File Browser: each pane is 로컬(local) or 서버(server) -----
     let fbLoaded = false, fbActive = "L";

@@ -774,6 +774,117 @@ def api_infer_video():
 
 _BROWSE_ROOT = os.environ.get("WEB_BROWSE_ROOT", "/data3/bhkim/datasets")
 
+# --- 분기기 Switch: 이벤트별 시퀀스 갤러리 (switch_events/) ---
+# 각 이벤트 = 분기기 통과 1회. 폴더에 전후 ±20초(1fps) 프레임 f00..f40 + manifest.json
+_SWITCH_DIR = os.path.realpath(os.path.join(_BROWSE_ROOT, "Rail_switch_crawling"))
+_SWITCH_EVENTS = os.path.join(_SWITCH_DIR, "switch_events")
+_SWITCH_THUMBS = os.path.join(_SWITCH_DIR, "browser", "ethumbs")
+_SWITCH_FLAG = {"Switzerland": "🇨🇭", "Korea": "🇰🇷", "UK": "🇬🇧", "Sweden": "🇸🇪",
+                "Balkans": "🇷🇸", "Germany": "🇩🇪", "USA": "🇺🇸", "Netherlands": "🇳🇱",
+                "Japan": "🇯🇵", "India": "🇮🇳", "France": "🇫🇷"}
+
+
+@app.route("/api/switch/events")
+def api_switch_events():
+    """분기기 통과 이벤트 목록 (switch_events/index.json + 각 폴더 manifest의 center_frame)."""
+    import json as _json
+    items = []
+    try:
+        with open(os.path.join(_SWITCH_EVENTS, "index.json"), encoding="utf-8") as f:
+            idx = _json.load(f)
+    except (FileNotFoundError, ValueError):
+        idx = []
+    try:
+        with open(os.path.join(_SWITCH_EVENTS, "onpath.json"), encoding="utf-8") as f:
+            cls = _json.load(f)
+    except (FileNotFoundError, ValueError):
+        cls = {}
+    for e in idx:
+        ev = e.get("event", "")
+        center = None
+        try:
+            with open(os.path.join(_SWITCH_EVENTS, ev, "manifest.json"), encoding="utf-8") as mf:
+                center = _json.load(mf).get("center_frame")
+        except Exception:
+            pass
+        c = cls.get(ev, {})
+        items.append({
+            "event": ev, "vid": e.get("video_id", ""), "url": e.get("url", ""),
+            "region": e.get("region", ""), "flag": _SWITCH_FLAG.get(e.get("region", ""), "🏳️"),
+            "title": e.get("title", ""), "center_time": e.get("center_time_s", 0),
+            "n_frames": e.get("n_frames", 0), "members": e.get("collected_members", 0),
+            "center": center,
+            "onpath": c.get("onpath"), "confidence": c.get("confidence"), "reason": c.get("reason", ""),
+        })
+    return jsonify(items)
+
+
+def _event_dir(event):
+    """Resolve an event name to its real dir inside switch_events, or None (blocks traversal)."""
+    name = os.path.basename(event or "")
+    p = os.path.realpath(os.path.join(_SWITCH_EVENTS, name))
+    if p.startswith(_SWITCH_EVENTS + os.sep) and os.path.isdir(p):
+        return p
+    return None
+
+
+@app.route("/api/switch/frames/<path:event>")
+def api_switch_frames(event):
+    """한 이벤트의 프레임 파일명(시간순) + manifest."""
+    import json as _json
+    d = _event_dir(event)
+    if not d:
+        return ("not found", 404)
+    frames = sorted(f for f in os.listdir(d)
+                    if f.startswith("f") and f.lower().endswith(".jpg"))
+    manifest = {}
+    try:
+        with open(os.path.join(d, "manifest.json"), encoding="utf-8") as f:
+            manifest = _json.load(f)
+    except Exception:
+        pass
+    return jsonify({"event": os.path.basename(d), "frames": frames, "manifest": manifest})
+
+
+def _event_frame_path(event, frame):
+    """Resolve (event, frame) to a real file, or None (blocks traversal)."""
+    d = _event_dir(event)
+    if not d:
+        return None
+    fname = os.path.basename(frame or "")
+    p = os.path.realpath(os.path.join(d, fname))
+    if (p.startswith(d + os.sep) and os.path.isfile(p)
+            and fname.lower().endswith((".jpg", ".jpeg", ".png"))):
+        return p
+    return None
+
+
+@app.route("/api/switch/frame/<path:event>/<path:frame>")
+def api_switch_frame(event, frame):
+    p = _event_frame_path(event, frame)
+    if not p:
+        return ("not found", 404)
+    return send_file(p)
+
+
+@app.route("/api/switch/ethumb/<path:event>/<path:frame>")
+def api_switch_ethumb(event, frame):
+    """이벤트 카드용 썸네일(중심 프레임)."""
+    p = _event_frame_path(event, frame)
+    if not p:
+        return ("not found", 404)
+    tp = os.path.join(_SWITCH_THUMBS, os.path.basename(event) + "__" + os.path.basename(frame))
+    if os.path.isfile(tp):
+        return send_file(tp)
+    try:
+        os.makedirs(_SWITCH_THUMBS, exist_ok=True)
+        im = Image.open(p).convert("RGB")
+        im.thumbnail((360, 360))
+        im.save(tp, quality=82)
+        return send_file(tp)
+    except Exception:
+        return send_file(p)
+
 
 @app.route("/api/browse")
 def api_browse():
@@ -2891,6 +3002,597 @@ def api_train_stream():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# --- GitHub 원본 저장소 뷰어 (irtrailenium/train-ego-path-detection) ---
+# 이 checkout의 `origin` 리모트가 그 저장소 자체이므로, 트리/파일 내용은
+# GitHub API 없이 로컬 git 객체(`origin/<branch>`)에서 바로 읽는다.
+# 메타데이터(스타 수 등)만 `gh api`로 가져오고 짧게 캐시한다.
+_GH_OWNER = "irtrailenium"
+_GH_REPO = "train-ego-path-detection"
+_GH_REMOTE = "origin"
+_GH_README_CANDIDATES = ("README.md", "Readme.md", "readme.md", "README.rst", "README")
+_GH_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico")
+_gh_cache = {"branch": None, "branch_at": 0, "info": None, "info_at": 0}
+
+
+def _gh_default_branch():
+    now = __import__("time").time()
+    if _gh_cache["branch"] and now - _gh_cache["branch_at"] < 3600:
+        return _gh_cache["branch"]
+    branch = "master"
+    try:
+        r = subprocess.run(["git", "remote", "show", _GH_REMOTE], cwd=BASE_PATH,
+                            capture_output=True, text=True, timeout=15)
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("HEAD branch:"):
+                branch = line.split(":", 1)[1].strip() or branch
+                break
+    except Exception:
+        pass
+    _gh_cache["branch"], _gh_cache["branch_at"] = branch, now
+    return branch
+
+
+def _gh_show(path):
+    """`git show origin/<branch>:<path>` 결과 (bytes) 또는 None (없거나 오류)."""
+    branch = _gh_default_branch()
+    try:
+        r = subprocess.run(["git", "show", f"{_GH_REMOTE}/{branch}:{path}"],
+                            cwd=BASE_PATH, capture_output=True, timeout=20)
+        if r.returncode != 0:
+            return None
+        return r.stdout
+    except Exception:
+        return None
+
+
+@app.route("/api/ghrepo/info")
+def api_ghrepo_info():
+    """저장소 메타데이터(설명·스타·이슈 수 등). GitHub API, 10분 캐시."""
+    now = __import__("time").time()
+    if _gh_cache["info"] and now - _gh_cache["info_at"] < 600:
+        return jsonify(_gh_cache["info"])
+    fields = ("description,stargazers_count,forks_count,open_issues_count,"
+              "default_branch,updated_at,html_url,language")
+    try:
+        r = subprocess.run(
+            ["gh", "api", f"repos/{_GH_OWNER}/{_GH_REPO}", "--jq",
+             "{" + ",".join(f'{f}:.{f}' for f in fields.split(",")) + ',license:.license.spdx_id}'],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            return jsonify({"error": (r.stderr or "gh api 실패").strip()[:300]}), 502
+        import json
+        info = json.loads(r.stdout)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    _gh_cache["info"], _gh_cache["info_at"] = info, now
+    return jsonify(info)
+
+
+@app.route("/api/ghrepo/refresh", methods=["POST"])
+def api_ghrepo_refresh():
+    """`git fetch origin`으로 최신 커밋 반영."""
+    try:
+        r = subprocess.run(["git", "fetch", _GH_REMOTE, "--quiet"], cwd=BASE_PATH,
+                            capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            return jsonify({"ok": False, "error": r.stderr.strip()[:300]}), 502
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    _gh_cache["info_at"] = 0  # force metadata re-fetch on next /info call
+    branch = _gh_default_branch()
+    log = subprocess.run(["git", "log", "-1", "--format=%h %ci %s", f"{_GH_REMOTE}/{branch}"],
+                          cwd=BASE_PATH, capture_output=True, text=True, timeout=15)
+    return jsonify({"ok": True, "branch": branch, "last_commit": log.stdout.strip()})
+
+
+@app.route("/api/ghrepo/tree")
+def api_ghrepo_tree():
+    """전체 파일 경로 목록(평탄한 리스트, 프런트에서 트리로 조립)."""
+    branch = _gh_default_branch()
+    try:
+        r = subprocess.run(["git", "ls-tree", "-r", "--name-only", f"{_GH_REMOTE}/{branch}"],
+                            cwd=BASE_PATH, capture_output=True, text=True, timeout=20)
+        if r.returncode != 0:
+            return jsonify({"error": r.stderr.strip()[:300]}), 502
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    paths = [p for p in r.stdout.splitlines() if p]
+    readme = next((c for c in _GH_README_CANDIDATES if c in paths), None)
+    return jsonify({"branch": branch, "paths": paths, "readme": readme})
+
+
+@app.route("/api/ghrepo/readme")
+def api_ghrepo_readme():
+    for name in _GH_README_CANDIDATES:
+        data = _gh_show(name)
+        if data is not None:
+            return jsonify({"path": name, "content": data.decode("utf-8", "replace")})
+    return jsonify({"error": "README를 찾을 수 없습니다."}), 404
+
+
+@app.route("/api/ghrepo/file")
+def api_ghrepo_file():
+    path = (request.args.get("path") or "").strip().lstrip("/")
+    if not path or ".." in path.split("/"):
+        return jsonify({"error": "잘못된 경로"}), 400
+    data = _gh_show(path)
+    if data is None:
+        return jsonify({"error": "파일을 찾을 수 없습니다."}), 404
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _GH_IMAGE_EXT:
+        import mimetypes
+        mt = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        return Response(data, mimetype=mt)
+    MAX_PREVIEW = 400_000
+    truncated = len(data) > MAX_PREVIEW
+    text = data[:MAX_PREVIEW].decode("utf-8", "replace")
+    return jsonify({"path": path, "content": text, "size": len(data), "truncated": truncated})
+
+
+@app.route("/api/ghrepo/run_demo", methods=["POST"])
+def api_ghrepo_run_demo():
+    """저장소의 demo.py를 실제로 실행한다.
+
+    demo.py는 로컬 checkout과 origin이 완전히 동일하다(diff 없음). 다만 이
+    프로젝트는 weights/를 egopath/weights/로 옮겨서, demo.py가 하드코딩해
+    둔 ``<repo>/weights/<name>`` 경로가 그대로는 안 맞는다. 저장소 자체는
+    건드리지 않고, 임시 디렉터리에 demo.py 사본 + weights/data/src 심볼릭
+    링크를 만들어 그 안에서 돌린다(끝나면 정리).
+    """
+    import base64
+    import shutil
+    import tempfile
+
+    demo_path = os.path.join(BASE_PATH, "demo.py")
+    if not os.path.isfile(demo_path):
+        return jsonify({"error": "demo.py를 찾을 수 없습니다."}), 404
+
+    tmpdir = tempfile.mkdtemp(prefix="ghrepo_demo_")
+    try:
+        shutil.copy(demo_path, os.path.join(tmpdir, "demo.py"))
+        os.symlink(BASE_WEIGHTS_PATH, os.path.join(tmpdir, "weights"))
+        os.symlink(os.path.join(BASE_PATH, "data"), os.path.join(tmpdir, "data"))
+        os.symlink(os.path.join(BASE_PATH, "src"), os.path.join(tmpdir, "src"))
+        env = os.environ.copy()
+        full_gpus = list_full_gpus()
+        if full_gpus:
+            # GPU 0 is MIG-partitioned here; torch's CUDA init crashes unless a
+            # full GPU is pinned explicitly (see training tab for the same fix).
+            env["CUDA_VISIBLE_DEVICES"] = full_gpus[0]["uuid"]
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = ""  # no full GPU available -> force CPU
+        try:
+            r = subprocess.run([sys.executable, "demo.py"], cwd=tmpdir, env=env,
+                                capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            return jsonify({"error": "demo.py 실행이 3분을 넘어 중단했습니다."}), 504
+
+        images = []
+        out_dir = os.path.join(tmpdir, "output")
+        if os.path.isdir(out_dir):
+            for fn in sorted(os.listdir(out_dir)):
+                if fn.lower().endswith((".jpg", ".jpeg", ".png")):
+                    with open(os.path.join(out_dir, fn), "rb") as f:
+                        b64 = base64.b64encode(f.read()).decode("ascii")
+                    images.append({"name": fn, "data_url": f"data:image/jpeg;base64,{b64}"})
+
+        ok = r.returncode == 0
+        log = (r.stdout or "") + (r.stderr or "")
+        return jsonify({"ok": ok, "returncode": r.returncode, "log": log[-8000:], "images": images})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+_GH_TRAIN_METHODS = ("regression", "classification", "segmentation")
+_GH_TRAIN_BACKBONES = ("resnet18", "resnet34", "resnet50",
+                        "efficientnet-b0", "efficientnet-b1", "efficientnet-b2", "efficientnet-b3")
+
+
+@app.route("/api/ghrepo/run_train", methods=["POST"])
+def api_ghrepo_run_train():
+    """origin train.py와 같은 기본 모드(RNN 아님, 처음부터 학습)로 시작.
+
+    학습 탭(``/api/train/*``)과 동일한 ``_train`` 프로세스 상태를 공유하므로
+    기존 ``/api/train/stream``·``/api/train/stop``을 그대로 재사용할 수 있고,
+    학습 탭에서 이미 실행 중인 작업이 있으면 여기서도 시작할 수 없다(GPU 1개
+    프로세스 정책 동일).
+    """
+    with _train_lock:
+        p = _train.get("proc")
+        if p and p.poll() is None:
+            return jsonify({"error": "이미 실행 중인 학습이 있습니다 (학습 탭 확인)."}), 409
+
+        method = (request.form.get("method") or "regression").strip()
+        if method not in _GH_TRAIN_METHODS:
+            return jsonify({"error": f"잘못된 method: {method}"}), 400
+        backbone = (request.form.get("backbone") or "resnet18").strip()
+        if backbone not in _GH_TRAIN_BACKBONES:
+            return jsonify({"error": f"잘못된 backbone: {backbone}"}), 400
+        try:
+            epochs = int(request.form.get("epochs", 50))
+        except ValueError:
+            return jsonify({"error": "잘못된 epochs"}), 400
+        gpu_uuid = (request.form.get("gpu_uuid") or "").strip()
+        if not gpu_uuid:
+            # GPU 0 is MIG-partitioned here; leaving CUDA_VISIBLE_DEVICES unset
+            # crashes torch's CUDA init, so default to the first full GPU.
+            full_gpus = list_full_gpus()
+            if full_gpus:
+                gpu_uuid = full_gpus[0]["uuid"]
+
+        cmd = [sys.executable, "train.py", method, backbone,
+               "--device", "cuda:0", "--epochs", str(epochs)]
+        env = os.environ.copy()
+        if gpu_uuid:
+            env["CUDA_VISIBLE_DEVICES"] = gpu_uuid
+        log_path = os.path.join(BASE_PATH, "train_web_ghrepo.log")
+        logf = open(log_path, "w")
+        proc = subprocess.Popen(cmd, cwd=BASE_PATH, stdout=logf,
+                                 stderr=subprocess.STDOUT, env=env)
+        _train.update({
+            "proc": proc, "log": log_path, "logf": logf,
+            "output": f"{method}-{backbone} (origin train.py 기본 모드)",
+            "args": {"method": method, "backbone": backbone, "epochs": epochs, "mode": "base"},
+        })
+    return jsonify({"ok": True, "cmd": " ".join(cmd)})
+
+
+_GH_DETECT_OUTPUT_DIR = os.path.join(BASE_PATH, "output", "ghrepo_detect")
+_GH_DETECT_VIDEO_EXT = (".mp4", ".avi")
+
+
+@app.route("/api/ghrepo/run_detect", methods=["POST"])
+def api_ghrepo_run_detect():
+    """저장소의 detect.py를 실제로 실행한다 (모델·파일·출력·크롭·구간·크롭표시·장비 전부 CLI 옵션 그대로).
+
+    demo.py와 같은 이유로(weights/ 위치가 다름) 임시 디렉터리에 detect.py
+    사본 + weights/src 심볼릭 링크를 만들어 그 안에서 돌린다.
+    """
+    import shutil
+    import tempfile
+    import uuid
+
+    model = (request.form.get("model") or "").strip()
+    valid_models = {e["name"] for e in discover_models() if e["base_path"]}
+    if model not in valid_models:
+        return jsonify({"error": f"알 수 없는 모델: {model}"}), 400
+
+    # Input can be either an uploaded file or a path already on the server
+    # (picked via the browse dialog, or typed in) — the latter skips the
+    # upload round-trip entirely since detect.py can read it directly.
+    server_path = (request.form.get("server_path") or "").strip()
+    upload = request.files.get("file")
+    if server_path:
+        if not os.path.isfile(server_path):
+            return jsonify({"error": f"서버 파일을 찾을 수 없습니다: {server_path}"}), 400
+        input_basename = os.path.basename(server_path)
+    elif upload and upload.filename:
+        input_basename = upload.filename
+    else:
+        return jsonify({"error": "입력 파일이 없습니다 (업로드하거나 서버 파일을 선택하세요)."}), 400
+    ext = os.path.splitext(input_basename)[1].lower()
+    if ext not in SUPPORTED_IMAGE_EXTENSIONS + SUPPORTED_VIDEO_EXTENSIONS:
+        return jsonify({"error": f"지원하지 않는 파일 형식: {ext}"}), 400
+
+    crop_mode = (request.form.get("crop_mode") or "auto").strip().lower()
+    if crop_mode not in ("auto", "none", "manual"):
+        return jsonify({"error": f"잘못된 crop 모드: {crop_mode}"}), 400
+    if crop_mode == "manual":
+        try:
+            coords = [int(request.form.get(f"crop_{k}", 0)) for k in ("left", "top", "right", "bottom")]
+        except ValueError:
+            return jsonify({"error": "크롭 좌표는 정수여야 합니다."}), 400
+        crop_arg = ",".join(str(c) for c in coords)
+    else:
+        crop_arg = crop_mode
+
+    try:
+        start = int(request.form.get("start", 0))
+    except ValueError:
+        return jsonify({"error": "잘못된 start"}), 400
+    end_raw = (request.form.get("end") or "").strip()
+    end = None
+    if end_raw:
+        try:
+            end = int(end_raw)
+        except ValueError:
+            return jsonify({"error": "잘못된 end"}), 400
+    show_crop = request.form.get("show_crop") == "true"
+    out_dir_req = (request.form.get("output") or "").strip()
+    gpu_uuid = (request.form.get("gpu_uuid") or "").strip()  # "" => CPU
+
+    detect_path = os.path.join(BASE_PATH, "detect.py")
+    if not os.path.isfile(detect_path):
+        return jsonify({"error": "detect.py를 찾을 수 없습니다."}), 404
+
+    tmpdir = tempfile.mkdtemp(prefix="ghrepo_detect_")
+    try:
+        shutil.copy(detect_path, os.path.join(tmpdir, "detect.py"))
+        os.symlink(BASE_WEIGHTS_PATH, os.path.join(tmpdir, "weights"))
+        os.symlink(os.path.join(BASE_PATH, "src"), os.path.join(tmpdir, "src"))
+
+        if server_path:
+            input_path = server_path  # absolute path, readable as-is from any cwd
+        else:
+            in_dir = os.path.join(tmpdir, "input")
+            os.makedirs(in_dir, exist_ok=True)
+            input_path = os.path.join(in_dir, upload.filename)
+            upload.save(input_path)
+
+        token = uuid.uuid4().hex[:12]
+        result_dir = os.path.join(_GH_DETECT_OUTPUT_DIR, token)
+        os.makedirs(result_dir, exist_ok=True)
+
+        cmd = [sys.executable, "detect.py", model, input_path,
+               "--output", result_dir, "--crop", crop_arg, "--start", str(start)]
+        if end is not None:
+            cmd += ["--end", str(end)]
+        if show_crop:
+            cmd.append("--show-crop")
+
+        env = os.environ.copy()
+        if gpu_uuid:
+            env["CUDA_VISIBLE_DEVICES"] = gpu_uuid
+            cmd += ["--device", "cuda:0"]
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = ""  # no GPU chosen -> force CPU (avoids the MIG crash too)
+            cmd += ["--device", "cpu"]
+
+        is_video = ext in _GH_DETECT_VIDEO_EXT
+        timeout = 600 if is_video else 120
+        try:
+            r = subprocess.run(cmd, cwd=tmpdir, env=env, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(result_dir, ignore_errors=True)
+            return jsonify({"error": f"detect.py 실행이 {timeout}초를 넘어 중단했습니다."}), 504
+
+        log = ((r.stdout or "") + (r.stderr or ""))[-8000:]
+        outname = f"{os.path.splitext(input_basename)[0]}_out{ext}"
+        out_path = os.path.join(result_dir, outname)
+        if r.returncode != 0 or not os.path.exists(out_path):
+            shutil.rmtree(result_dir, ignore_errors=True)
+            return jsonify({"ok": False, "returncode": r.returncode, "log": log,
+                             "cmd": " ".join(str(c) for c in cmd)}), 200
+
+        if out_dir_req:
+            try:
+                os.makedirs(out_dir_req, exist_ok=True)
+                shutil.copy(out_path, os.path.join(out_dir_req, outname))
+            except OSError as e:
+                log += f"\n(--output 사본 저장 실패: {e})"
+
+        if is_video:
+            result = {"kind": "video", "url": f"/api/ghrepo/detect_output/{token}/{outname}"}
+        else:
+            import base64
+            with open(out_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            result = {"kind": "image", "data_url": f"data:image/jpeg;base64,{b64}"}
+            shutil.rmtree(result_dir, ignore_errors=True)  # inlined already; no need to keep it
+
+        return jsonify({"ok": True, "returncode": 0, "log": log,
+                         "cmd": " ".join(str(c) for c in cmd), "result": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@app.route("/api/ghrepo/detect_output/<token>/<path:filename>")
+def api_ghrepo_detect_output(token, filename):
+    import re
+    if not re.fullmatch(r"[0-9a-f]{12}", token) or "/" in filename or ".." in filename:
+        return ("bad request", 400)
+    path = os.path.join(_GH_DETECT_OUTPUT_DIR, token, filename)
+    if not os.path.isfile(path):
+        return ("not found", 404)
+    return send_file(path)
+
+
+@app.route("/api/ghrepo/run_detect_compare", methods=["POST"])
+def api_ghrepo_run_detect_compare():
+    """개발 중인 RNN 모델과 그 기반(기존) single-frame 모델을 같은 이미지에
+    나란히 돌려 비교한다. detect.py는 모델 하나만 다루므로, 여기서는 이미
+    앱이 데스크톱 GUI와 공유하는 in-process 비교 로직(``run_both``)을 그대로
+    쓴다 — 모델 두 개를 각각 한 번만 로딩해(캐시됨) 같은 이미지에 돌리는
+    구조라 빠르고, 결과는 detect.py가 만드는 것과 동일한 시각화다.
+    이미지 전용(비디오 비교는 지원하지 않음)."""
+    model = (request.form.get("model") or "").strip()
+    entry = next((e for e in discover_models() if e["name"] == model), None)
+    if entry is None or not entry["base_path"] or not entry["rnn_path"]:
+        return jsonify({"error": f"'{model}'에는 비교할 기존 모델·RNN 모델 쌍이 없습니다."}), 400
+
+    server_path = (request.form.get("server_path") or "").strip()
+    upload = request.files.get("file")
+    if server_path:
+        if not os.path.isfile(server_path):
+            return jsonify({"error": f"서버 파일을 찾을 수 없습니다: {server_path}"}), 400
+        ext = os.path.splitext(server_path)[1].lower()
+        if ext not in SUPPORTED_IMAGE_EXTENSIONS:
+            return jsonify({"error": "비교 모드는 이미지 파일만 지원합니다 (영상은 지원하지 않음)."}), 400
+        img = Image.open(server_path)
+    elif upload and upload.filename:
+        ext = os.path.splitext(upload.filename)[1].lower()
+        if ext not in SUPPORTED_IMAGE_EXTENSIONS:
+            return jsonify({"error": "비교 모드는 이미지 파일만 지원합니다 (영상은 지원하지 않음)."}), 400
+        img = Image.open(upload.stream)
+    else:
+        return jsonify({"error": "입력 파일이 없습니다."}), 400
+
+    crop_mode = (request.form.get("crop_mode") or "auto").strip().lower()
+    if crop_mode not in ("auto", "none", "manual"):
+        return jsonify({"error": f"잘못된 crop 모드: {crop_mode}"}), 400
+    crop_coords = None
+    if crop_mode == "manual":
+        try:
+            crop_coords = [int(request.form.get(f"crop_{k}", 0)) for k in ("left", "top", "right", "bottom")]
+        except ValueError:
+            return jsonify({"error": "크롭 좌표는 정수여야 합니다."}), 400
+    device = (request.form.get("device") or "cpu").strip()
+    if device not in available_devices():
+        return jsonify({"error": f"사용할 수 없는 장비: {device}"}), 400
+
+    try:
+        det_single, det_rnn = detectors_for_request(model, device, crop_mode, crop_coords)
+        single_vis, rnn_vis, timing = run_both(img, det_single, det_rnn)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({
+        "ok": True,
+        "single": pil_to_data_uri(single_vis),
+        "rnn": pil_to_data_uri(rnn_vis),
+        "timing": timing,
+    })
+
+
+# --- 폴더 내 이미지 다수를 detect.py로 연속 추론 (Laurent 원본 탭, 서버 파일 선택 시 폴더도 고를 수 있게) ---
+_gh_batch_lock = threading.Lock()
+_gh_detect_batch = {"running": False, "total": 0, "done": 0, "results": [], "log": "",
+                     "cancel": False, "token": None, "folder": None}
+
+
+@app.route("/api/ghrepo/run_detect_batch", methods=["POST"])
+def api_ghrepo_run_detect_batch():
+    """폴더 안의 이미지들을 연속으로 추론한다 (백그라운드 스레드).
+
+    처음 버전은 이미지마다 detect.py를 새 프로세스로 띄웠는데, 그러면 이미지
+    한 장당 파이썬/torch/CUDA 초기화 + 모델 로딩을 매번 반복해서(실제 추론
+    자체보다 이 오버헤드가 훨씬 컸다) 폴더가 크면 눈에 띄게 느렸다. 대신 이
+    앱이 단일 이미지·비디오 추론에 이미 쓰고 있는 것과 같은 인메모리
+    Detector(모델 1회 로딩, 캐시됨)를 재사용해 이미지들을 순서대로 돌린다 —
+    detect.py의 비디오 처리 방식과 동일하게(자동 크롭도 매 이미지 50회 반복
+    없이 시퀀스 전체에서 자연스럽게 수렴) 처리해서 결과는 동일하고 훨씬
+    빠르다.
+    """
+    import uuid
+
+    # Reserve the "running" slot atomically with the check, so two concurrent
+    # requests can't both pass the check before either sets it (which would
+    # start two worker threads writing into the same shared state).
+    with _gh_batch_lock:
+        if _gh_detect_batch["running"]:
+            return jsonify({"error": "이미 폴더 일괄 추론이 실행 중입니다."}), 409
+        _gh_detect_batch["running"] = True
+
+    def _reject(msg, code):
+        with _gh_batch_lock:
+            _gh_detect_batch["running"] = False
+        return jsonify({"error": msg}), code
+
+    model = (request.form.get("model") or "").strip()
+    compare = request.form.get("compare") == "true"
+    if compare:
+        entry = next((e for e in discover_models() if e["name"] == model), None)
+        if entry is None or not entry["base_path"] or not entry["rnn_path"]:
+            return _reject(f"'{model}'에는 비교할 기존 모델·RNN 모델 쌍이 없습니다.", 400)
+        model_path = entry["base_path"]  # only used for the "found" check below
+    else:
+        model_path, _ = model_paths_for(model)
+    if not model_path:
+        return _reject(f"알 수 없는 모델: {model}", 400)
+
+    folder = (request.form.get("folder") or "").strip()
+    files = list_folder_images(folder)
+    if files is None:
+        return _reject(f"폴더가 아닙니다: {folder}", 400)
+    if not files:
+        return _reject("폴더에 이미지가 없습니다.", 400)
+
+    crop_mode = (request.form.get("crop_mode") or "auto").strip().lower()
+    if crop_mode not in ("auto", "none", "manual"):
+        return _reject(f"잘못된 crop 모드: {crop_mode}", 400)
+    crop_coords = None
+    if crop_mode == "manual":
+        try:
+            crop_coords = [int(request.form.get(f"crop_{k}", 0)) for k in ("left", "top", "right", "bottom")]
+        except ValueError:
+            return _reject("크롭 좌표는 정수여야 합니다.", 400)
+    show_crop = request.form.get("show_crop") == "true"
+    device = (request.form.get("device") or "cpu").strip()
+    if device not in available_devices():
+        return _reject(f"사용할 수 없는 장비: {device}", 400)
+
+    token = uuid.uuid4().hex[:12]
+    result_dir = os.path.join(_GH_DETECT_OUTPUT_DIR, token)
+    os.makedirs(result_dir, exist_ok=True)
+
+    with _gh_batch_lock:
+        _gh_detect_batch.update({"total": len(files), "done": 0,
+                                  "results": [], "log": "", "cancel": False,
+                                  "token": token, "folder": folder})
+
+    def worker():
+        try:
+            if compare:
+                det_single, det_rnn = detectors_for_request(model, device, crop_mode, crop_coords)
+            else:
+                det = prepare_detector(model_path, device, crop_mode, crop_coords)
+        except Exception as e:
+            with _gh_batch_lock:
+                _gh_detect_batch["log"] = f"모델 로딩 실패: {e}"
+                _gh_detect_batch["running"] = False
+            return
+        for fn in files:
+            with _gh_batch_lock:
+                if _gh_detect_batch["cancel"]:
+                    break
+            in_path = os.path.join(folder, fn)
+            stem, fext = os.path.splitext(fn)
+            ok, err = True, ""
+            try:
+                img = Image.open(in_path)
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                if compare:
+                    single_vis, rnn_vis, timing = run_both(img, det_single, det_rnn)
+                    single_name, rnn_name = f"{stem}_existing{fext}", f"{stem}_rnn{fext}"
+                    single_vis.save(os.path.join(result_dir, single_name))
+                    rnn_vis.save(os.path.join(result_dir, rnn_name))
+                else:
+                    crop = det.get_crop_coords() if show_crop else None
+                    res = det.detect(img)
+                    outname = f"{stem}_out{fext}"
+                    draw_egopath(img, res, crop_coords=crop).save(os.path.join(result_dir, outname))
+            except Exception as e:  # noqa: BLE001 - one bad image shouldn't abort the batch
+                ok, err = False, str(e)
+            with _gh_batch_lock:
+                _gh_detect_batch["done"] += 1
+                if ok and compare:
+                    _gh_detect_batch["results"].append({
+                        "name": fn,
+                        "existing_url": f"/api/ghrepo/detect_output/{token}/{single_name}",
+                        "rnn_url": f"/api/ghrepo/detect_output/{token}/{rnn_name}",
+                        "timing": timing,
+                    })
+                elif ok:
+                    _gh_detect_batch["results"].append(
+                        {"name": fn, "url": f"/api/ghrepo/detect_output/{token}/{outname}"})
+                else:
+                    _gh_detect_batch["log"] += f"[{fn}] 실패: {err}\n"
+        with _gh_batch_lock:
+            _gh_detect_batch["running"] = False
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({"ok": True, "total": len(files), "token": token})
+
+
+@app.route("/api/ghrepo/detect_batch_status")
+def api_ghrepo_detect_batch_status():
+    with _gh_batch_lock:
+        return jsonify(dict(_gh_detect_batch))
+
+
+@app.route("/api/ghrepo/detect_batch_stop", methods=["POST"])
+def api_ghrepo_detect_batch_stop():
+    with _gh_batch_lock:
+        _gh_detect_batch["cancel"] = True
+    return jsonify({"ok": True})
 
 
 def main():
