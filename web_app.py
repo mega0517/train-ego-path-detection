@@ -2216,12 +2216,81 @@ def api_label_eval_sample_remove():
             removed = _json.load(f)
     except (OSError, ValueError):
         removed = []
-    removed.extend(m for m in sample if m.get("event") == ev)
+    dropped = [m for m in sample if m.get("event") == ev]
+    removed.extend(dropped)
+
+    # 자동 보충: 같은 지역(없으면 전체)에서 아직 안 쓰인 이벤트를 골라 채운다.
+    replacement = None
+    if request.form.get("refill", "1") != "0":
+        replacement = _eval_sample_pick_replacement(
+            keep, removed, dropped[0].get("region", "") if dropped else "")
+        if replacement is not None:
+            keep.append(replacement)
+            # 라벨링 탭의 annots 자동 선택이 manifest.json을 집지 않도록 시드
+            lp = os.path.join(_SWITCH_EVENTS, replacement["event"], "egopath_labels.json")
+            if not os.path.exists(lp):
+                with open(lp, "w", encoding="utf-8") as f:
+                    f.write("{}")
+            _spawn_overlay_clean(replacement["event"])
+
     for fp, data in ((p, keep), (rp, removed)):
         with open(fp + ".tmp", "w", encoding="utf-8") as f:
             _json.dump(data, f, ensure_ascii=False, indent=1)
         os.replace(fp + ".tmp", fp)
-    return jsonify({"ok": True, "remaining": len(keep)})
+    return jsonify({"ok": True, "remaining": len(keep),
+                    "replacement": replacement and replacement["event"]})
+
+
+def _eval_sample_pick_replacement(sample, removed, region):
+    """index.json에서 샘플·제거 이력에 없는 이벤트를 고른다 (같은 지역 우선).
+
+    선택은 제거 순서에 무관하게 재현되도록 이벤트 이름 정렬 순서로 정한다.
+    """
+    import json as _json
+    try:
+        with open(os.path.join(_SWITCH_EVENTS, "index.json"), encoding="utf-8") as f:
+            index = _json.load(f)
+    except (OSError, ValueError):
+        return None
+    used = {m.get("event") for m in sample} | {m.get("event") for m in removed}
+    pool = [e for e in index if e.get("event") and e["event"] not in used
+            and os.path.isdir(os.path.join(_SWITCH_EVENTS, e["event"]))]
+    same = sorted((e for e in pool if e.get("region", "") == region),
+                  key=lambda e: e["event"])
+    pick = same[0] if same else (sorted(pool, key=lambda e: e["event"])[0] if pool else None)
+    if pick is None:
+        return None
+    d = os.path.join(_SWITCH_EVENTS, pick["event"])
+    frames = sorted(f for f in os.listdir(d) if f.endswith(".jpg"))
+    if len(frames) < 3:
+        return None
+    center = None
+    try:
+        with open(os.path.join(d, "manifest.json"), encoding="utf-8") as f:
+            center = _json.load(f).get("center_frame")
+    except (OSError, ValueError):
+        pass
+    ci = frames.index(center) if center in frames else len(frames) // 2
+    return {"event": pick["event"], "region": pick.get("region", ""),
+            "video_id": pick.get("video_id", ""), "center_frame": frames[ci],
+            "n_frames": len(frames),
+            "gt_frames": frames[max(0, ci - 10): ci + 11]}
+
+
+def _spawn_overlay_clean(event):
+    """새 샘플 이벤트의 자막 제거를 백그라운드로 실행한다 (완료까지 수 분)."""
+    script = os.path.join(BASE_PATH, "tools", "remove_overlay_text.py")
+    if not os.path.isfile(script):
+        return
+    env = os.environ.copy()
+    full_gpus = list_full_gpus()
+    if full_gpus:
+        env["CUDA_VISIBLE_DEVICES"] = full_gpus[0]["uuid"]
+    log = open(os.path.join(BASE_PATH, "overlay_clean_web.log"), "a")
+    subprocess.Popen(
+        [sys.executable, script, "--events", os.path.basename(event)],
+        cwd=BASE_PATH, stdout=log, stderr=subprocess.STDOUT, env=env,
+        start_new_session=True)
 
 
 @app.route("/api/label/autolabel", methods=["POST"])

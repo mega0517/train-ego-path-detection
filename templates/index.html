@@ -3385,12 +3385,13 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       const v = $("lblEvalSel").value;
       if (v === "" || !EVAL_SAMPLE.length) { alert("먼저 이벤트를 선택하세요."); return; }
       const m = EVAL_SAMPLE[parseInt(v, 10)];
-      if (!confirm(`'${m.event}'\n이 이벤트를 평가 샘플에서 제거할까요?\n(폴더·라벨 파일은 남고, 평가 목록에서만 빠집니다. eval_sample_removed.json에서 복구 가능)`)) return;
+      if (!confirm(`'${m.event}'\n이 이벤트를 평가 샘플에서 제거할까요?\n같은 지역의 새 이벤트가 자동 보충됩니다(자막 제거는 백그라운드로 수 분 소요).\n(폴더·라벨 파일은 남고, eval_sample_removed.json에서 복구 가능)`)) return;
       const fd = new FormData();
       fd.append("event", m.event);
       try {
         const d = await (await fetch("/api/label/eval_sample_remove", { method: "POST", body: fd })).json();
         if (d.error) { alert(d.error); return; }
+        if (d.replacement) alert(`보충된 새 이벤트: ${d.replacement}\n(자막 제거가 백그라운드에서 진행됩니다 — 이 이벤트는 잠시 뒤에 라벨링하세요)`);
         const next = Math.min(parseInt(v, 10), (d.remaining || 1) - 1);
         await lblEvalLoad();
         if (EVAL_SAMPLE.length) lblEvalGo(next);
