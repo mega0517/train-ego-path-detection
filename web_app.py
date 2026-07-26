@@ -2159,6 +2159,37 @@ def api_label_save():
     return jsonify({"ok": True, "labeled_count": len(data)})
 
 
+@app.route("/api/label/eval_sample")
+def api_label_eval_sample():
+    """분기기 평가 샘플(eval_sample.json) 이벤트 목록 + 이벤트별 라벨 진행도.
+
+    라벨링 탭의 "평가 샘플" 셀렉터가 사용한다. 진행도는 각 이벤트 폴더의
+    egopath_labels.json에서 좌·우 레일이 모두 있는 프레임 수로 계산한다.
+    """
+    import json as _json
+    p = os.path.join(_SWITCH_EVENTS, "eval_sample.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            sample = _json.load(f)
+    except (OSError, ValueError):
+        return jsonify({"error": "eval_sample.json이 없습니다."}), 404
+    items = []
+    for m in sample:
+        d = os.path.join(_SWITCH_EVENTS, os.path.basename(m.get("event", "")))
+        labeled = 0
+        try:
+            with open(os.path.join(d, "egopath_labels.json"), encoding="utf-8") as f:
+                data = _json.load(f)
+            labeled = sum(1 for v in data.values()
+                          if isinstance(v, dict) and v.get("left_rail") and v.get("right_rail"))
+        except (OSError, ValueError):
+            pass
+        items.append({"event": m.get("event", ""), "folder": d,
+                      "region": m.get("region", ""), "center": m.get("center_frame", ""),
+                      "n_frames": m.get("n_frames", 0), "labeled": labeled})
+    return jsonify(items)
+
+
 @app.route("/api/label/autolabel", methods=["POST"])
 def api_label_autolabel():
     """Propagate a labeled frame's rails to the following frames via optical flow

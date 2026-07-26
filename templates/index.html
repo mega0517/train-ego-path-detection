@@ -878,6 +878,13 @@
         <input type="text" id="lblAnnots" class="pathinput"
                placeholder="auto: <folder>/egopath_labels.json" />
         <div class="info">위에서 폴더를 선택하면 이미지가 자동으로 로드됩니다.</div>
+        <label style="margin-top:8px;">평가 샘플 (분기기 30 이벤트)</label>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button class="btn" id="lblEvalPrev" style="background:#455a64;" title="이전 이벤트">◀</button>
+          <select id="lblEvalSel" style="flex:1;min-width:0;"><option value="">— 이벤트 선택 —</option></select>
+          <button class="btn" id="lblEvalNext" style="background:#455a64;" title="다음 이벤트">▶</button>
+        </div>
+        <div class="info" id="lblEvalInfo">체크리스트 30개를 ◀ ▶로 차례로 이동하며 라벨링합니다.</div>
       </div>
 
       <div class="card span2">
@@ -3328,6 +3335,51 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       loadLabelList();
     }
     $("lblFolder").onchange = lblFolderChanged;
+
+    // ----- 평가 샘플(분기기 30) 순차 선택 -----
+    let EVAL_SAMPLE = [];
+    async function lblEvalLoad(keep) {
+      try {
+        const d = await (await fetch("/api/label/eval_sample")).json();
+        if (!Array.isArray(d)) return;
+        EVAL_SAMPLE = d;
+        const sel = $("lblEvalSel");
+        sel.innerHTML = '<option value="">— 이벤트 선택 —</option>';
+        d.forEach((m, i) => {
+          const op = document.createElement("option");
+          const mark = m.labeled >= m.n_frames && m.n_frames > 0 ? "✅"
+                     : m.labeled > 0 ? "🔶" : "⬜";
+          op.value = String(i);
+          op.textContent = `${mark} ${String(i + 1).padStart(2, "0")}. [${m.region}] ${m.event} (${m.labeled}/${m.n_frames})`;
+          sel.appendChild(op);
+        });
+        if (keep !== undefined) sel.value = String(keep);
+      } catch (_) { /* eval_sample.json 없으면 셀렉터는 비워 둠 */ }
+    }
+    function lblEvalGo(i) {
+      if (!EVAL_SAMPLE.length) return;
+      i = Math.max(0, Math.min(EVAL_SAMPLE.length - 1, i));
+      const m = EVAL_SAMPLE[i];
+      $("lblEvalSel").value = String(i);
+      $("lblFolder").value = m.folder;
+      lblFolderChanged();
+      $("lblEvalInfo").textContent =
+        `${i + 1}/${EVAL_SAMPLE.length} · 중심 프레임 ${m.center} · 라벨 ${m.labeled}/${m.n_frames}`;
+      lblEvalLoad(i);  // 진행도 갱신(선택 유지)
+    }
+    $("lblEvalSel").onchange = () => {
+      const v = $("lblEvalSel").value;
+      if (v !== "") lblEvalGo(parseInt(v, 10));
+    };
+    $("lblEvalPrev").onclick = () => {
+      const v = $("lblEvalSel").value;
+      lblEvalGo(v === "" ? 0 : parseInt(v, 10) - 1);
+    };
+    $("lblEvalNext").onclick = () => {
+      const v = $("lblEvalSel").value;
+      lblEvalGo(v === "" ? 0 : parseInt(v, 10) + 1);
+    };
+    lblEvalLoad();
     // Re-list when the annotations path changes (refreshes labeled marks).
     $("lblAnnots").onchange = () => {
       if (!$("lblFolder").value.trim()) return;
