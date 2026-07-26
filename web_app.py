@@ -2627,6 +2627,10 @@ def api_label_detect_model():
     files = list_folder_images(folder)
     if files is None:
         return jsonify({"error": f"Not a folder: {folder}"}), 400
+    only = (request.form.get("only") or "").strip()
+    if only:  # 특정 프레임만 라벨링 (저장 시 다음 프레임 전파 용도)
+        wanted = {os.path.basename(n.strip()) for n in only.split(",") if n.strip()}
+        files = [f for f in files if f in wanted]
     if not files:
         return jsonify({"error": "No images in folder."}), 400
     if not annots.lower().endswith(".json") or not _annots_path_ok(annots):

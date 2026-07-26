@@ -946,7 +946,7 @@
       <div class="canvas-wrap"><canvas id="lblCanvas"></canvas></div>
       <!-- 저장/이동 액션 바: 사이드바 스크롤과 무관하게 항상 보이도록 캔버스 위에 고정 -->
       <div id="lblActionBar" style="position:absolute;right:16px;bottom:16px;z-index:20;display:flex;gap:8px;align-items:center;background:rgba(38,50,56,.88);padding:8px 10px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.35);">
-        <label style="display:flex;align-items:center;gap:4px;color:#eceff1;font-size:12px;white-space:nowrap;cursor:pointer;" title="저장한 라벨을 SAM2 마스크 전파로 다음 프레임에 반영합니다 (실패 시 옵티컬 플로우 폴백)">
+        <label style="display:flex;align-items:center;gap:4px;color:#eceff1;font-size:12px;white-space:nowrap;cursor:pointer;" title="저장 후 다음 프레임을 자동 라벨링합니다 — 자동 라벨 카드에서 선택된 TEP-Net 모델 사용, 미선택/실패 시 SAM2 전파">
           <input type="checkbox" id="lblFlowNext" checked> 다음에 전파
         </label>
         <button class="btn" id="lblPrevBtn" style="background:#607d8b;">← 이전</button>
@@ -3732,24 +3732,32 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         fd.append("folder", $("lblFolder").value.trim());
         fd.append("annots", $("lblAnnots").value.trim());
         fd.append("start_name", lbl.images[lbl.idx].name);
-        try {
-          // 1차: SAM2 마스크 전파 (1fps처럼 이동이 커도 정확)
-          fd.append("steps", "1");
-          const d = await (await fetch("/api/label/sam2_step", { method: "POST", body: fd })).json();
-          if (d.error) throw new Error(d.error);
-          lbl.images[lbl.idx + 1].labeled = true; renderImgList();
-        } catch (err) {
-          // 2차: 옵티컬 플로우 폴백
+        const nextName = lbl.images[lbl.idx + 1].name;
+        const model = $("lblDetectModel").value;
+        let ok = false;
+        if (model) {
+          // 1차: 자동 라벨 카드에서 현재 선택된 TEP-Net 모델로 다음 프레임 라벨링
+          $("lblStatus").textContent = `Saved ✓ · ${model}(으)로 다음 프레임 라벨링 중…`;
           try {
-            const fd2 = new FormData();
-            fd2.append("folder", $("lblFolder").value.trim());
-            fd2.append("annots", $("lblAnnots").value.trim());
-            fd2.append("start_name", lbl.images[lbl.idx].name);
-            fd2.append("max_frames", "1");
-            await (await fetch("/api/label/autolabel", { method: "POST", body: fd2 })).text();
-            lbl.images[lbl.idx + 1].labeled = true; renderImgList();
-          } catch (_) { /* 전파 실패해도 다음 프레임 이동은 계속 */ }
+            const fd1 = new FormData();
+            fd1.append("folder", $("lblFolder").value.trim());
+            fd1.append("annots", $("lblAnnots").value.trim());
+            fd1.append("model", model);
+            fd1.append("device", $("lblDetectDevice").value || "cpu");
+            fd1.append("only", nextName);
+            const txt = await (await fetch("/api/label/detect_model", { method: "POST", body: fd1 })).text();
+            ok = txt.includes('"type": "done"') && !txt.includes('"type": "error"');
+          } catch (_) { ok = false; }
         }
+        if (!ok) {
+          // 2차: SAM2 마스크 전파 폴백 (모델 미선택/실패 시)
+          try {
+            fd.append("steps", "1");
+            const d = await (await fetch("/api/label/sam2_step", { method: "POST", body: fd })).json();
+            ok = !d.error;
+          } catch (_) { ok = false; }
+        }
+        if (ok) { lbl.images[lbl.idx + 1].labeled = true; renderImgList(); }
       }
       loadLabelImage(lbl.idx + 1);
     };
