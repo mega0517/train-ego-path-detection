@@ -903,11 +903,6 @@
         <input type="range" id="lblLineWidth" min="1" max="15" value="5" style="width:100%;" />
       </div>
 
-      <button class="btn run span2" id="lblSaveBtn">저장 &amp; 다음 →</button>
-      <div class="rail-btns span2" style="margin-top:6px;">
-        <button class="btn" id="lblPrevBtn" style="flex:1;background:#607d8b;">← 이전</button>
-        <button class="btn" id="lblNextBtn" style="flex:1;background:#607d8b;">다음 →</button>
-      </div>
       <div class="card span2">
         <h2>자동 라벨 (학습된 모델로 레일 검출)</h2>
         <div class="info">학습된 모델로 모든 프레임의 레일을 직접 검출해 라벨을 생성합니다. 시드·추적이 없어 드리프트가 없으며, 도메인이 맞는 모델일수록 정확합니다. regression 모델은 좌·우 레일을 직접 예측해 라벨용으로 가장 깔끔합니다. 생성 후 어긋난 프레임만 수동 보정하세요.</div>
@@ -946,8 +941,14 @@
       </div>
     </aside>
 
-    <main class="main">
+    <main class="main" style="position:relative;">
       <div class="canvas-wrap"><canvas id="lblCanvas"></canvas></div>
+      <!-- 저장/이동 액션 바: 사이드바 스크롤과 무관하게 항상 보이도록 캔버스 위에 고정 -->
+      <div id="lblActionBar" style="position:absolute;right:16px;bottom:16px;z-index:20;display:flex;gap:8px;align-items:center;background:rgba(38,50,56,.88);padding:8px 10px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.35);">
+        <button class="btn" id="lblPrevBtn" style="background:#607d8b;">← 이전</button>
+        <button class="btn run" id="lblSaveBtn" style="min-width:130px;">저장 &amp; 다음 →</button>
+        <button class="btn" id="lblNextBtn" style="background:#607d8b;">다음 →</button>
+      </div>
     </main>
   </div>
 
