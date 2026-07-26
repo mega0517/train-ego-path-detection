@@ -2190,6 +2190,40 @@ def api_label_eval_sample():
     return jsonify(items)
 
 
+@app.route("/api/label/eval_sample_remove", methods=["POST"])
+def api_label_eval_sample_remove():
+    """평가 샘플에서 이벤트 하나 제거.
+
+    eval_sample.json에서 빼서 eval_sample_removed.json에 보관한다(복구 가능).
+    이벤트 폴더와 라벨 파일은 건드리지 않는다 — 평가 목록에서만 빠진다.
+    """
+    import json as _json
+    ev = os.path.basename((request.form.get("event") or "").strip())
+    if not ev:
+        return jsonify({"error": "event가 없습니다."}), 400
+    p = os.path.join(_SWITCH_EVENTS, "eval_sample.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            sample = _json.load(f)
+    except (OSError, ValueError):
+        return jsonify({"error": "eval_sample.json이 없습니다."}), 404
+    keep = [m for m in sample if m.get("event") != ev]
+    if len(keep) == len(sample):
+        return jsonify({"error": f"샘플에 없는 이벤트: {ev}"}), 404
+    rp = os.path.join(_SWITCH_EVENTS, "eval_sample_removed.json")
+    try:
+        with open(rp, encoding="utf-8") as f:
+            removed = _json.load(f)
+    except (OSError, ValueError):
+        removed = []
+    removed.extend(m for m in sample if m.get("event") == ev)
+    for fp, data in ((p, keep), (rp, removed)):
+        with open(fp + ".tmp", "w", encoding="utf-8") as f:
+            _json.dump(data, f, ensure_ascii=False, indent=1)
+        os.replace(fp + ".tmp", fp)
+    return jsonify({"ok": True, "remaining": len(keep)})
+
+
 @app.route("/api/label/autolabel", methods=["POST"])
 def api_label_autolabel():
     """Propagate a labeled frame's rails to the following frames via optical flow

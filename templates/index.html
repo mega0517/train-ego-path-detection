@@ -883,6 +883,7 @@
           <button class="btn" id="lblEvalPrev" style="background:#455a64;" title="이전 이벤트">◀</button>
           <select id="lblEvalSel" style="flex:1;min-width:0;"><option value="">— 이벤트 선택 —</option></select>
           <button class="btn" id="lblEvalNext" style="background:#455a64;" title="다음 이벤트">▶</button>
+          <button class="btn" id="lblEvalDelBtn" style="background:#c62828;" title="현재 이벤트를 평가 샘플에서 제거">🗑</button>
         </div>
         <div class="info" id="lblEvalInfo">체크리스트 30개를 ◀ ▶로 차례로 이동하며 라벨링합니다.</div>
       </div>
@@ -3379,6 +3380,25 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
     $("lblEvalNext").onclick = () => {
       const v = $("lblEvalSel").value;
       lblEvalGo(v === "" ? 0 : parseInt(v, 10) + 1);
+    };
+    $("lblEvalDelBtn").onclick = async () => {
+      const v = $("lblEvalSel").value;
+      if (v === "" || !EVAL_SAMPLE.length) { alert("먼저 이벤트를 선택하세요."); return; }
+      const m = EVAL_SAMPLE[parseInt(v, 10)];
+      if (!confirm(`'${m.event}'\n이 이벤트를 평가 샘플에서 제거할까요?\n(폴더·라벨 파일은 남고, 평가 목록에서만 빠집니다. eval_sample_removed.json에서 복구 가능)`)) return;
+      const fd = new FormData();
+      fd.append("event", m.event);
+      try {
+        const d = await (await fetch("/api/label/eval_sample_remove", { method: "POST", body: fd })).json();
+        if (d.error) { alert(d.error); return; }
+        const next = Math.min(parseInt(v, 10), (d.remaining || 1) - 1);
+        await lblEvalLoad();
+        if (EVAL_SAMPLE.length) lblEvalGo(next);
+        else {
+          $("lblEvalSel").innerHTML = '<option value="">— 이벤트 선택 —</option>';
+          $("lblEvalInfo").textContent = "평가 샘플이 비었습니다.";
+        }
+      } catch (e) { alert("제거 실패: " + e.message); }
     };
     lblEvalLoad();
     // Re-list when the annotations path changes (refreshes labeled marks).
