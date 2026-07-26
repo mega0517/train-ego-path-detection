@@ -894,7 +894,7 @@
           <button class="btn lon" id="lblLeftBtn" style="flex:1;">왼쪽 레일</button>
           <button class="btn off" id="lblRightBtn" style="flex:1;">오른쪽 레일</button>
         </div>
-        <div class="info">빈 곳 클릭=점 추가 · 점 드래그=이동 · 점 우클릭=삭제</div>
+        <div class="info">빈 곳 클릭=점 추가 · 선분 클릭=사이에 점 삽입 · 점 드래그=이동 · 점 우클릭=삭제</div>
         <div class="rail-btns" style="margin-top:6px;">
           <button class="btn" id="lblUndoBtn" style="flex:1;background:#6b7280;">점 취소</button>
           <button class="btn" id="lblClearBtn" style="flex:1;background:#9e9e9e;">레일 지우기</button>
@@ -3556,6 +3556,24 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       }
       return best;
     }
+    // Find the nearest polyline segment (either rail) within the grab distance.
+    function hitSegment(dx, dy) {
+      const grab = Math.max(8, lbl.lineWidth * 1.6);
+      let best = null, bestD = grab;
+      for (const rail of ["left", "right"]) {
+        const pts = rail === "left" ? lbl.left : lbl.right;
+        for (let i = 0; i + 1 < pts.length; i++) {
+          const [x1, y1] = o2d(pts[i]), [x2, y2] = o2d(pts[i + 1]);
+          const vx = x2 - x1, vy = y2 - y1;
+          const len2 = vx * vx + vy * vy;
+          if (!len2) continue;
+          const t = Math.max(0, Math.min(1, ((dx - x1) * vx + (dy - y1) * vy) / len2));
+          const d = Math.hypot(dx - (x1 + t * vx), dy - (y1 + t * vy));
+          if (d <= bestD) { bestD = d; best = { rail, i }; }
+        }
+      }
+      return best;
+    }
     let lblDrag = null;  // {rail, i} while dragging a node
     lblCanvas.onmousedown = (e) => {
       if (lbl.idx < 0) return;
@@ -3569,6 +3587,15 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       }
       const hit = hitPoint(dx, dy);
       if (hit) { lblDrag = hit; return; }            // grab existing node to move it
+      // On a segment → insert a point between its endpoints (drag to fine-tune).
+      const seg = hitSegment(dx, dy);
+      if (seg) {
+        const pts = seg.rail === "left" ? lbl.left : lbl.right;
+        pts.splice(seg.i + 1, 0, [ox, oy]);
+        lblDrag = { rail: seg.rail, i: seg.i + 1 };
+        redrawLabel();
+        return;
+      }
       // Empty space → add a new point to the current rail.
       (lbl.rail === "left" ? lbl.left : lbl.right).push([ox, oy]);
       redrawLabel();
@@ -3581,7 +3608,8 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
                           Math.round(dy * lbl.origH / lbl.dispH)];
         redrawLabel();
       } else {
-        lblCanvas.style.cursor = hitPoint(dx, dy) ? "move" : "crosshair";
+        lblCanvas.style.cursor = hitPoint(dx, dy) ? "move"
+          : hitSegment(dx, dy) ? "copy" : "crosshair";
       }
     };
     function endDrag() { lblDrag = null; }
