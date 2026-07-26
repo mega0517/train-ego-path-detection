@@ -946,7 +946,7 @@
       <div class="canvas-wrap"><canvas id="lblCanvas"></canvas></div>
       <!-- 저장/이동 액션 바: 사이드바 스크롤과 무관하게 항상 보이도록 캔버스 위에 고정 -->
       <div id="lblActionBar" style="position:absolute;right:16px;bottom:16px;z-index:20;display:flex;gap:8px;align-items:center;background:rgba(38,50,56,.88);padding:8px 10px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.35);">
-        <label style="display:flex;align-items:center;gap:4px;color:#eceff1;font-size:12px;white-space:nowrap;cursor:pointer;" title="저장한 라벨을 옵티컬 플로우로 다음 프레임에 전파해 자동 라벨을 갱신합니다">
+        <label style="display:flex;align-items:center;gap:4px;color:#eceff1;font-size:12px;white-space:nowrap;cursor:pointer;" title="저장한 라벨을 SAM2 마스크 전파로 다음 프레임에 반영합니다 (실패 시 옵티컬 플로우 폴백)">
           <input type="checkbox" id="lblFlowNext" checked> 다음에 전파
         </label>
         <button class="btn" id="lblPrevBtn" style="background:#607d8b;">← 이전</button>
@@ -3727,16 +3727,29 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       // 수정 완료한 라벨을 다음 프레임에 반영: 옵티컬 플로우로 1프레임 전파해
       // 다음 프레임의 자동 라벨을 방금 확정한 라벨 기준으로 갱신한다.
       if ($("lblFlowNext").checked && lbl.idx + 1 < lbl.images.length) {
-        $("lblStatus").textContent = "Saved ✓ · 다음 프레임에 전파 중…";
+        $("lblStatus").textContent = "Saved ✓ · 다음 프레임에 SAM2 전파 중…";
+        const fd = new FormData();
+        fd.append("folder", $("lblFolder").value.trim());
+        fd.append("annots", $("lblAnnots").value.trim());
+        fd.append("start_name", lbl.images[lbl.idx].name);
         try {
-          const fd = new FormData();
-          fd.append("folder", $("lblFolder").value.trim());
-          fd.append("annots", $("lblAnnots").value.trim());
-          fd.append("start_name", lbl.images[lbl.idx].name);
-          fd.append("max_frames", "1");
-          await (await fetch("/api/label/autolabel", { method: "POST", body: fd })).text();
+          // 1차: SAM2 마스크 전파 (1fps처럼 이동이 커도 정확)
+          fd.append("steps", "1");
+          const d = await (await fetch("/api/label/sam2_step", { method: "POST", body: fd })).json();
+          if (d.error) throw new Error(d.error);
           lbl.images[lbl.idx + 1].labeled = true; renderImgList();
-        } catch (_) { /* 전파 실패해도 다음 프레임 이동은 계속 */ }
+        } catch (err) {
+          // 2차: 옵티컬 플로우 폴백
+          try {
+            const fd2 = new FormData();
+            fd2.append("folder", $("lblFolder").value.trim());
+            fd2.append("annots", $("lblAnnots").value.trim());
+            fd2.append("start_name", lbl.images[lbl.idx].name);
+            fd2.append("max_frames", "1");
+            await (await fetch("/api/label/autolabel", { method: "POST", body: fd2 })).text();
+            lbl.images[lbl.idx + 1].labeled = true; renderImgList();
+          } catch (_) { /* 전파 실패해도 다음 프레임 이동은 계속 */ }
+        }
       }
       loadLabelImage(lbl.idx + 1);
     };

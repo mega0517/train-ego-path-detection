@@ -2531,6 +2531,86 @@ def _drop_center_outliers(ys, lo, hi, tol=3.0):
     return keep
 
 
+@app.route("/api/label/sam2_step", methods=["POST"])
+def api_label_sam2_step():
+    """확정한 라벨을 SAM2로 바로 뒤 프레임(들)에 전파한다.
+
+    수정 완료한 프레임의 좌·우 레일로 궤도 폴리곤 마스크를 만들어 SAM2에
+    마스크 프롬프트로 주고 다음 프레임에 전파한다. 1fps처럼 프레임 간
+    이동이 큰 시퀀스에서 LK 옵티컬 플로우보다 훨씬 안정적이다.
+    """
+    import json as _json
+    import shutil
+    import tempfile
+
+    import cv2
+    import numpy as np
+
+    folder = (request.form.get("folder") or "").strip()
+    annots = (request.form.get("annots") or "").strip()
+    start = os.path.basename((request.form.get("start_name") or "").strip())
+    try:
+        steps = max(1, min(10, int(request.form.get("steps", 1))))
+    except ValueError:
+        steps = 1
+
+    files = list_folder_images(folder)
+    if files is None:
+        return jsonify({"error": f"Not a folder: {folder}"}), 400
+    if not annots.lower().endswith(".json") or not _annots_path_ok(annots):
+        return jsonify({"error": "Invalid annotations path."}), 400
+    if not os.path.exists(_SAM2_CKPT):
+        return jsonify({"error": "SAM2 checkpoint missing (run setup)."}), 400
+    data = _load_annotations(annots)
+    if start not in files:
+        return jsonify({"error": "Start image not in folder."}), 400
+    ann = data.get(start) or {}
+    L, R = ann.get("left_rail"), ann.get("right_rail")
+    if not L or not R or len(L) < 2 or len(R) < 2:
+        return jsonify({"error": "Label the start frame first."}), 400
+    si = files.index(start)
+    names = [start] + files[si + 1: si + 1 + steps]
+    if len(names) < 2:
+        return jsonify({"error": "No following frame."}), 400
+
+    with Image.open(os.path.join(folder, start)) as im:
+        W, H = im.size
+    mask = np.zeros((H, W), np.uint8)
+    cv2.fillPoly(mask, [np.array(list(L) + list(R)[::-1], np.int32)], 1)
+    if not mask.any():
+        return jsonify({"error": "Empty mask from start labels."}), 400
+
+    tmp = tempfile.mkdtemp(prefix="sam2s_")
+    try:
+        for i, name in enumerate(names):
+            os.symlink(os.path.abspath(os.path.join(folder, name)),
+                       os.path.join(tmp, f"{i:06d}.jpg"))
+        pred, dev = _sam2_predictor()
+        updated = []
+        with torch.inference_mode(), torch.autocast(dev, dtype=torch.bfloat16):
+            state = pred.init_state(video_path=tmp)
+            pred.add_new_mask(inference_state=state, frame_idx=0, obj_id=1,
+                              mask=mask.astype(bool))
+            for fidx, _obj_ids, logits in pred.propagate_in_video(state):
+                if fidx == 0:
+                    continue
+                m = (logits[0] > 0.0).cpu().numpy()
+                m = m[0] if m.ndim == 3 else m
+                l2, r2 = _sam2_rails_from_mask(m)
+                if l2 and r2:
+                    data[names[fidx]] = {"left_rail": l2, "right_rail": r2}
+                    updated.append(names[fidx])
+        tmpj = annots + ".tmp"
+        with open(tmpj, "w") as f:
+            _json.dump(data, f)
+        os.replace(tmpj, annots)
+        return jsonify({"ok": True, "updated": updated})
+    except Exception as e:  # noqa: BLE001 - surface the reason to the UI
+        return jsonify({"error": str(e)}), 500
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 @app.route("/api/label/detect_model", methods=["POST"])
 def api_label_detect_model():
     """Auto-label every frame by running a trained model (default brilliant-horse-15)
