@@ -37,3 +37,4 @@ web_app.log
 
 # Bundled runtime binaries (e.g. unrar for the File Browser tab) — fetched per-host
 bin/
+overlay_clean_web.log

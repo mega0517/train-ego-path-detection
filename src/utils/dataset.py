@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 import numpy as np
 import torch
@@ -425,6 +426,111 @@ class SequencePathsDataset(PathsDataset):
             torch.from_numpy(path_gt),
             torch.tensor(ylim_gt),
         )
+
+
+class RealSequencePathsDataset(SequencePathsDataset):
+    """Sequence dataset built from REAL consecutive video frames, not pseudo-motion.
+
+    SequencePathsDataset synthesizes a sequence from a SINGLE image by interpolating
+    crop boxes, because RailSem19 has no video. Datasets recorded as video (OSDaR23)
+    do have genuine consecutive frames, so here the sequence is the annotated frame
+    plus its actual predecessors, subsampled by `seq_stride` frames. With a 10 fps
+    recording, seq_stride=10 yields a 1 fps sequence, matching the inter-frame motion
+    of the switch-event evaluation clips; the pseudo-sequences never contain that much
+    real motion, so a refiner trained on them sees a much easier tracking problem.
+
+    Frames are grouped into scenes by filename (``<scene>__<index>_<timestamp>.<ext>``)
+    and history is clamped at the scene start (the earliest available frame repeats),
+    mirroring inference, where the buffer fills up gradually at sequence start.
+
+    The whole sequence shares the current frame's crop box (plus a small jitter on the
+    earlier frames to mimic autocrop wobble), so every frame's prediction already lives
+    in a common coordinate frame and the target still comes from the last frame only.
+    """
+
+    SCENE_RE = re.compile(r"^(?P<scene>.+)__(?P<index>\d+)_[\d.]+\.[A-Za-z]+$")
+
+    def __init__(self, *args, seq_stride=10, **kwargs):
+        super(RealSequencePathsDataset, self).__init__(*args, **kwargs)
+        self.seq_stride = max(1, int(seq_stride))
+        # Scene index over ALL annotated frames: a sequence's history may reach
+        # outside this split's subset. Only the last frame's target is used, so
+        # no label from another frame (or split) enters training.
+        scenes = {}
+        for name in sorted(self.annotations.keys()):
+            m = self.SCENE_RE.match(name)
+            key = m.group("scene") if m else name.rsplit("_", 1)[0]
+            order = int(m.group("index")) if m else 0
+            scenes.setdefault(key, []).append((order, name))
+        self.scene_frames = {}   # scene -> [name, ...] in capture order
+        self.frame_pos = {}      # name -> (scene, position)
+        for key, items in scenes.items():
+            items.sort()
+            names = [n for _, n in items]
+            self.scene_frames[key] = names
+            for pos, n in enumerate(names):
+                self.frame_pos[n] = (key, pos)
+        if self.gpu_preprocess:
+            raise NotImplementedError(
+                "gpu_preprocess is not implemented for real-sequence training"
+            )
+
+    def sequence_names(self, img_name):
+        """The `seq_len` real frames ending at `img_name`, oldest first."""
+        scene, pos = self.frame_pos[img_name]
+        names = self.scene_frames[scene]
+        out = []
+        for i in range(self.seq_len - 1, -1, -1):
+            p = max(0, pos - i * self.seq_stride)
+            out.append(names[p])
+        return out
+
+    def __getitem__(self, idx):
+        img_name = self.imgs[idx]
+        img = Image.open(os.path.join(self.imgs_path, img_name)).convert("RGB")
+        annotation = self.annotations[img_name]
+        rails_mask = self.generate_rails_mask(img.size, annotation)
+        current_box = self.random_crop_box(img, rails_mask)
+        # Same box for every frame, jittered on the earlier ones (autocrop wobble).
+        boxes = self.generate_sequence_boxes(current_box, img.width, img.height)
+        flip = np.random.rand() < 0.5  # consistent flip across the whole sequence
+        names = self.sequence_names(img_name)
+
+        frames, last_mask = [], None
+        for i, (name, box) in enumerate(zip(names, boxes)):
+            frame_img = (
+                img if name == img_name
+                else Image.open(os.path.join(self.imgs_path, name)).convert("RGB")
+            )
+            frame_img, frame_mask = self.apply_crop_box(frame_img, rails_mask, box)
+            if flip:
+                frame_img = ImageOps.mirror(frame_img)
+                frame_mask = np.fliplr(frame_mask)
+            frame_tensor = self.to_tensor(frame_img)
+            if self.img_aug:
+                frame_tensor = self.img_aug(frame_tensor)
+            frames.append(frame_tensor)
+            if i == len(names) - 1:
+                last_mask = frame_mask
+        occl = self.sample_occlusion()
+        if occl > 0:
+            h = frames[-1].shape[-2]
+            frames[-1] = frames[-1].clone()
+            frames[-1][..., int(round(h * (1 - occl))):, :] = self.OCCLUSION_FILL
+        seq = torch.stack(frames, dim=0)  # (T, C, H, W)
+
+        if self.method == "regression":
+            path_gt, ylim_gt = self.generate_target_regression(last_mask)
+            return seq, torch.from_numpy(path_gt), torch.tensor(ylim_gt)
+        elif self.method == "classification":
+            path_gt = self.generate_target_classification(last_mask)
+            return seq, torch.from_numpy(path_gt)
+        elif self.method == "segmentation":
+            segmentation = self.generate_target_segmentation(last_mask)
+            segmentation = segmentation.resize(
+                self.config["input_shape"][1:][::-1], Image.NEAREST
+            )
+            return seq, to_scaled_tensor(segmentation)
 
 
 def gpu_collate_fn(batch):

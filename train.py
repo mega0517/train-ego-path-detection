@@ -25,7 +25,12 @@ from src.nn.model import (
     SegmentationNetRNN,
 )
 from src.utils.common import set_seeds, set_worker_seeds, simple_logger, split_dataset
-from src.utils.dataset import PathsDataset, SequencePathsDataset, gpu_collate_fn
+from src.utils.dataset import (
+    PathsDataset,
+    RealSequencePathsDataset,
+    SequencePathsDataset,
+    gpu_collate_fn,
+)
 from src.utils.evaluate import IoUEvaluator
 from src.utils.gpu_transforms import GpuPreprocess
 from src.utils.trainer import train
@@ -76,6 +81,15 @@ def parse_arguments():
         "--finetune-base",
         action="store_true",
         help="With --temporal, also fine-tune the base per-frame weights instead of only training the RNN (base is frozen by default).",
+    )
+    parser.add_argument(
+        "--seq-stride",
+        type=int,
+        default=None,
+        help="With --temporal, build sequences from REAL consecutive video frames spaced this"
+        " many frames apart (e.g. 10 on a 10 fps recording = 1 fps), instead of the"
+        " synthetic crop-interpolated pseudo-sequences. Requires a dataset recorded as"
+        " video with <scene>__<index>_<timestamp> filenames (e.g. OSDaR23).",
     )
     parser.add_argument(
         "--seq-occlusion",
@@ -187,11 +201,19 @@ def main(args):
         config["base_model"] = args.base_model
         config["freeze_base"] = not args.finetune_base
 
+    if args.temporal and args.seq_stride is not None:
+        config["seq_stride"] = args.seq_stride
+        config["real_sequences"] = True
     if args.temporal and args.seq_occlusion is not None:
         config["seq_occlusion_prob"] = args.seq_occlusion
 
     # GPU-side preprocessing is only wired for the temporal (sequence) dataset.
-    config["gpu_preprocess"] = bool(args.gpu_preprocess) and args.temporal
+    config["gpu_preprocess"] = (
+        bool(args.gpu_preprocess) and args.temporal and args.seq_stride is None
+    )
+    if args.gpu_preprocess and args.seq_stride is not None:
+        print("\n[gpu-preprocess] disabled: real-sequence training decodes several"
+              " frames per sample on the CPU dataloader.")
     if args.gpu_preprocess and not args.temporal:
         logger.info(
             "\n[gpu-preprocess] --gpu-preprocess only applies to --temporal training; "
@@ -263,12 +285,19 @@ def main(args):
         train_indices, val_indices, test_indices = split_dataset(indices, proportions)
     set_seeds(config["seed"])  # reset random state
 
-    dataset_cls = SequencePathsDataset if args.temporal else PathsDataset
+    real_seq = args.temporal and args.seq_stride is not None
+    dataset_cls = (
+        RealSequencePathsDataset if real_seq
+        else SequencePathsDataset if args.temporal
+        else PathsDataset
+    )
     seq_kwargs = (
         {"seq_len": config["seq_len"], "seq_jitter": config["seq_jitter"]}
         if args.temporal
         else {}
     )
+    if real_seq:
+        seq_kwargs["seq_stride"] = config["seq_stride"]
     train_dataset = dataset_cls(
         imgs_path=config["images_path"],
         annotations_path=config["annotations_path"],
