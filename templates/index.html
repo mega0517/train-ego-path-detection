@@ -917,6 +917,10 @@
             <select id="lblDetectDevice"></select>
           </div>
         </div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;cursor:pointer;"
+               title="detect.py와 동일하게: --crop auto, 폴리라인 단순화 없음(RDP 끔), 시퀀스 시작에서만 시간 상태 초기화. 평가용 GT 라벨에 권장.">
+          <input type="checkbox" id="lblDetectExact" checked> detect.py 정확 일치 (auto 크롭 · 단순화 없음)
+        </label>
         <button class="btn" id="lblDetectBtn" style="margin-top:8px;background:#8e24aa;">모델로 자동 라벨 →</button>
       </div>
       <div class="card span2">
@@ -3745,6 +3749,13 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
             fd1.append("model", model);
             fd1.append("device", $("lblDetectDevice").value || "cpu");
             fd1.append("only", nextName);
+            // 대상 프레임 앞 4장을 저장 없이 통과시켜 오토크롭·시간 버퍼를 예열
+            // (detect.py가 시퀀스 중간에서 갖고 있을 상태와 같게).
+            fd1.append("warmup", "8");
+            fd1.append("crop_mode", "auto");
+            const exact1 = document.getElementById("lblDetectExact");
+            fd1.append("rdp_eps", !exact1 || exact1.checked ? "0" : "10");
+            fd1.append("temporal_mode", "sequence");
             const txt = await (await fetch("/api/label/detect_model", { method: "POST", body: fd1 })).text();
             ok = txt.includes('"type": "done"') && !txt.includes('"type": "error"');
           } catch (_) { ok = false; }
@@ -3787,6 +3798,13 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       fd.append("annots", annots);
       fd.append("model", model);
       fd.append("device", $("lblDetectDevice").value || "");
+      const exact = $("lblDetectExact").checked;
+      fd.append("rdp_eps", exact ? "0" : "10");
+      fd.append("temporal_mode", exact ? "sequence" : "frame");
+      // detect.py의 기본값은 --crop auto다. 크롭 없이 돌리면 학습 때와 입력
+      // 분포가 달라져 검출이 나빠진다. 폴더 전체를 순서대로 도는 동안
+      // 오토크롭이 스스로 수렴하므로 별도 예열은 필요 없다.
+      fd.append("crop_mode", exact ? "auto" : "none");
       try {
         const res = await fetch("/api/label/detect_model", { method: "POST", body: fd });
         if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }

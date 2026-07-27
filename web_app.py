@@ -2627,10 +2627,27 @@ def api_label_detect_model():
     files = list_folder_images(folder)
     if files is None:
         return jsonify({"error": f"Not a folder: {folder}"}), 400
+    all_files = list(files)
     only = (request.form.get("only") or "").strip()
     if only:  # 특정 프레임만 라벨링 (저장 시 다음 프레임 전파 용도)
         wanted = {os.path.basename(n.strip()) for n in only.split(",") if n.strip()}
         files = [f for f in files if f in wanted]
+    # detect.py는 폴리라인을 그대로 쓴다. 라벨을 손보기 쉽게 하려고 RDP로 점을
+    # 솎아내면 그만큼 GT가 근사되므로, 평가용 라벨에는 0(단순화 없음)을 쓴다.
+    try:
+        rdp_eps = max(0.0, float(request.form.get("rdp_eps", 10.0)))
+    except ValueError:
+        rdp_eps = 10.0
+    # "sequence": detect.py의 비디오 처리처럼 시퀀스 시작에서 한 번만 초기화해
+    # 시간 모델(RNN)과 오토크롭이 실제로 이력을 쓰게 한다. "frame": 프레임마다
+    # 초기화(각 프레임 독립, 기존 동작).
+    temporal_mode = (request.form.get("temporal_mode") or "sequence").strip().lower()
+    if temporal_mode not in ("sequence", "frame"):
+        return jsonify({"error": f"잘못된 temporal_mode: {temporal_mode}"}), 400
+    try:  # 대상 프레임 앞의 N프레임을 저장 없이 통과시켜 크롭·시간 상태를 예열
+        warmup = max(0, min(50, int(request.form.get("warmup", 0))))
+    except ValueError:
+        warmup = 0
     if not files:
         return jsonify({"error": "No images in folder."}), 400
     if not annots.lower().endswith(".json") or not _annots_path_ok(annots):
@@ -2641,6 +2658,10 @@ def api_label_detect_model():
         return jsonify({"error": str(e)}), 400
     det = det_single or det_rnn
     method = det.config.get("method", "segmentation")
+
+    def _rdp(points):
+        """RDP simplification, or the polyline untouched when rdp_eps == 0."""
+        return points if rdp_eps <= 0 else _rdp_simplify(points, eps=rdp_eps)
 
     def rails_from_result(res):
         """Return (left_rail, right_rail) point lists from a detector result."""
@@ -2661,14 +2682,14 @@ def api_label_detect_model():
                 return None, None
             left = [[int(lo[i]), int(ys[i])] for i in np.where(keep)[0]]
             right = [[int(hi[i]), int(ys[i])] for i in np.where(keep)[0]]
-            return _rdp_simplify(left), _rdp_simplify(right)
+            return _rdp(left), _rdp(right)
         # regression / classification: detect() already returns [left, right]
         if isinstance(res, (list, tuple)) and len(res) == 2:
             L = [[int(x), int(y)] for x, y in res[0]]
             R = [[int(x), int(y)] for x, y in res[1]]
             if len(L) < 2 or len(R) < 2:
                 return None, None
-            return _rdp_simplify(L), _rdp_simplify(R)
+            return _rdp(L), _rdp(R)
         return None, None
 
     data = _load_annotations(annots)
@@ -2683,13 +2704,26 @@ def api_label_detect_model():
             yield sse({"type": "status",
                        "message": f"Detecting rails with {model_name} on {len(files)} frames…"})
             done = 0
+            if warmup and files:
+                # Run the frames just before the first target through the detector
+                # without saving, so the autocropper has converged and the temporal
+                # buffer is filled -- the state detect.py would have at this point
+                # in a sequence.
+                first = all_files.index(files[0]) if files[0] in all_files else 0
+                for name in all_files[max(0, first - warmup):first]:
+                    try:
+                        img = Image.open(os.path.join(folder, name))
+                        img.load()
+                        det.detect(img.convert("RGB") if img.mode != "RGB" else img)
+                    except Exception:  # noqa: BLE001 - warm-up is best effort
+                        pass
             for i, name in enumerate(files):
                 try:
                     img = Image.open(os.path.join(folder, name))
                     img.load()
                     if img.mode != "RGB":
                         img = img.convert("RGB")
-                    if det.temporal:
+                    if det.temporal and temporal_mode == "frame":
                         det.reset_temporal()
                     left, right = rails_from_result(det.detect(img))
                     if left and right:
