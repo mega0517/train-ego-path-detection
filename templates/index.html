@@ -517,6 +517,16 @@
       #swLb .sw-evbtn{background:rgba(255,255,255,.12);color:#e6edf3;border:1px solid #3a4658;
         padding:7px 12px;border-radius:8px;font-size:13px;cursor:pointer}
       #swLb .sw-evbtn:hover{background:rgba(255,255,255,.22)}
+      #swLb .imgwrap{position:relative}
+      #swLb #swCropLayer{position:absolute;inset:0;cursor:crosshair;display:none}
+      #swLb.cropping #swCropLayer{display:block}
+      #swLb #swCropBox{position:absolute;border:2px dashed #ffd54f;background:rgba(255,213,79,.14);
+        pointer-events:none;display:none}
+      #swLb .cropbar{display:none;gap:10px;align-items:center;padding:6px 6px 0;
+        font-size:13px;color:#e6edf3;flex-wrap:wrap}
+      #swLb.cropping .cropbar{display:flex}
+      #swLb .cropbar .mono{font-family:monospace;color:#ffd54f}
+      #swLb .sw-evbtn.on{background:#ffb300;color:#1b1b1b;border-color:#ffb300}
       #swLb .sw-evbtn.danger{background:rgba(198,40,40,.85);border-color:#8e1f1f}
       #swLb .sw-evbtn.danger:hover{background:#b71c1c}
       #pageSwitch .sw-badge{position:absolute;top:7px;left:7px;background:rgba(6,8,11,.72);color:#fff;
@@ -559,13 +569,25 @@
       <div class="idx" id="swIdx"></div>
       <button class="nav prev" id="swPrev">‹</button>
       <button class="nav next" id="swNext">›</button>
-      <div class="imgwrap"><img id="swImg" alt=""></div>
+      <div class="imgwrap">
+        <img id="swImg" alt="">
+        <div id="swCropLayer"><div id="swCropBox"></div></div>
+      </div>
+      <div class="bar cropbar">
+        <span>드래그해 영역을 지정하세요.</span>
+        <span class="mono" id="swCropInfo">—</span>
+        <span style="flex:1"></span>
+        <button id="swCropApply" class="sw-evbtn">폴더 전체에 적용</button>
+        <button id="swCropReset" class="sw-evbtn">선택 해제</button>
+        <button id="swUncrop" class="sw-evbtn" title="orig_uncropped/의 원본으로 되돌립니다">크롭 되돌리기</button>
+      </div>
       <div class="bar">
         <b id="swFlag"></b><span id="swTitle"></span>
         <span class="mut" id="swFile"></span>
         <span style="flex:1"></span>
         <button id="swEvPrev" class="sw-evbtn" title="이전 이벤트">◀ 이벤트</button>
         <button id="swEvNext" class="sw-evbtn" title="다음 이벤트">이벤트 ▶</button>
+        <button id="swCropBtn" class="sw-evbtn" title="이 폴더의 모든 프레임에 같은 크롭 적용">✂ 크롭</button>
         <button id="swDelEv" class="sw-evbtn danger"
                 title="지금 보고 있는 이벤트를 제거 (_trash로 이동, 복구 가능)">🗑 이 이벤트 삭제</button>
         <a class="yt" id="swYt" target="_blank" rel="noopener">▶ 원본 영상 보기</a>
@@ -1710,6 +1732,28 @@
         $("swRoute").onchange = e => { swState.route = e.target.value; swRender(); };
         $("swSearch").oninput = e => { swState.q = e.target.value.trim().toLowerCase(); swRender(); };
         $("swClose").onclick = swCloseLb;
+        $("swCropBtn").onclick = () => swCropMode(!$("swLb").classList.contains("cropping"));
+        $("swCropApply").onclick = swCropApply;
+        $("swCropReset").onclick = () => { swCropSel = null; swCropDraw(); };
+        $("swUncrop").onclick = swUncrop;
+        const layer = $("swCropLayer");
+        layer.onmousedown = (e) => {
+          const p = swCropPoint(e);
+          if (!p) return;
+          e.preventDefault();
+          swCropDrag = p;
+        };
+        layer.onmousemove = (e) => {
+          if (!swCropDrag) return;
+          const p = swCropPoint(e);
+          if (!p) return;
+          swCropSel = { left: Math.min(swCropDrag[0], p[0]), top: Math.min(swCropDrag[1], p[1]),
+                        right: Math.max(swCropDrag[0], p[0]), bottom: Math.max(swCropDrag[1], p[1]) };
+          swCropDraw();
+        };
+        layer.onmouseup = () => { swCropDrag = null; };
+        layer.onmouseleave = () => { swCropDrag = null; };
+        window.addEventListener("resize", () => { if (swCropSel) swCropDraw(); });
         $("swDelEv").onclick = async () => {
           const x = swView[swEv];
           if (!x) return;
@@ -1850,9 +1894,90 @@
         swSetFrame(swCenter);
       });
     }
+    // ----- 폴더 일괄 크롭 -----
+    // 캡뷰 영상은 창틀·와이퍼·계기판이 가장자리를 덮어 검출을 망치는 경우가 많다.
+    // 한 프레임에서 고른 영역을 이벤트의 모든 프레임에 적용한다.
+    let swCropSel = null;      // {left, top, right, bottom} 원본 픽셀 좌표
+    let swCropDrag = null;
+    let swCacheBust = 0;       // 크롭 후 브라우저 캐시를 무시하기 위한 값
+
+    function swImgGeom() {
+      // object-fit:contain 이라 실제 그려진 영역은 레터박스 안쪽이다.
+      const img = $("swImg");
+      const r = img.getBoundingClientRect();
+      const nw = img.naturalWidth, nh = img.naturalHeight;
+      if (!nw || !nh) return null;
+      const scale = Math.min(r.width / nw, r.height / nh);
+      return { r, nw, nh, scale, dw: nw * scale, dh: nh * scale,
+               ox: (r.width - nw * scale) / 2, oy: (r.height - nh * scale) / 2 };
+    }
+    function swCropDraw() {
+      const g = swImgGeom(), box = $("swCropBox");
+      if (!g || !swCropSel) { box.style.display = "none"; $("swCropInfo").textContent = "—"; return; }
+      const layer = $("swCropLayer").getBoundingClientRect();
+      const x0 = g.r.left - layer.left + g.ox + swCropSel.left * g.scale;
+      const y0 = g.r.top - layer.top + g.oy + swCropSel.top * g.scale;
+      box.style.display = "block";
+      box.style.left = x0 + "px";
+      box.style.top = y0 + "px";
+      box.style.width = (swCropSel.right - swCropSel.left + 1) * g.scale + "px";
+      box.style.height = (swCropSel.bottom - swCropSel.top + 1) * g.scale + "px";
+      $("swCropInfo").textContent =
+        `${swCropSel.left},${swCropSel.top} → ${swCropSel.right},${swCropSel.bottom}`
+        + ` (${swCropSel.right - swCropSel.left + 1}×${swCropSel.bottom - swCropSel.top + 1}, 원본 ${g.nw}×${g.nh})`;
+    }
+    function swCropPoint(e) {
+      const g = swImgGeom();
+      if (!g) return null;
+      const x = (e.clientX - g.r.left - g.ox) / g.scale;
+      const y = (e.clientY - g.r.top - g.oy) / g.scale;
+      return [Math.round(Math.min(Math.max(0, x), g.nw - 1)),
+              Math.round(Math.min(Math.max(0, y), g.nh - 1))];
+    }
+    function swCropMode(on) {
+      $("swLb").classList.toggle("cropping", on);
+      $("swCropBtn").classList.toggle("on", on);
+      if (!on) { swCropSel = null; swCropDraw(); }
+    }
+    async function swCropApply() {
+      const x = swView[swEv];
+      if (!x || !swCropSel) { alert("먼저 영역을 드래그해 지정하세요."); return; }
+      const c = swCropSel;
+      if (!confirm(`'${x.event}'\n\n이 폴더의 모든 프레임을 아래 영역으로 자릅니다.\n`
+          + `${c.left},${c.top} → ${c.right},${c.bottom}\n\n`
+          + `원본은 orig_uncropped/ 에 보관되어 되돌릴 수 있고, 기존 라벨 좌표도 함께 옮겨집니다.`)) return;
+      const fd = new FormData();
+      fd.append("event", x.event);
+      ["left", "top", "right", "bottom"].forEach((k) => fd.append(k, c[k]));
+      try {
+        const d = await (await fetch("/api/switch/crop_event", { method: "POST", body: fd })).json();
+        if (d.error) { alert(d.error); return; }
+        alert(`${d.frames}개 프레임을 ${d.size[0]}×${d.size[1]} 로 잘랐습니다.`
+              + (d.labels_shifted ? `\n라벨 ${d.labels_shifted}개의 좌표도 함께 옮겼습니다.` : ""));
+        swCacheBust = Date.now();
+        swCropMode(false);
+        swSetFrame(swFi);
+      } catch (e) { alert("크롭 실패: " + e.message); }
+    }
+    async function swUncrop() {
+      const x = swView[swEv];
+      if (!x) return;
+      if (!confirm(`'${x.event}'\n\n크롭을 되돌려 원본 프레임을 복원할까요?\n`
+                   + `라벨 좌표는 크롭 기준이라 다시 만들어야 합니다.`)) return;
+      const fd = new FormData();
+      fd.append("event", x.event);
+      const d = await (await fetch("/api/switch/uncrop_event", { method: "POST", body: fd })).json();
+      if (d.error) { alert(d.error); return; }
+      alert(`${d.restored}개 프레임을 복원했습니다.\n${d.note}`);
+      swCacheBust = Date.now();
+      swCropMode(false);
+      swSetFrame(swFi);
+    }
+
     function swFrameUrl(fn) {
       const x = swView[swEv];
-      return "/api/switch/frame/" + encodeURIComponent(x.event) + "/" + encodeURIComponent(fn);
+      return "/api/switch/frame/" + encodeURIComponent(x.event) + "/" + encodeURIComponent(fn)
+             + (swCacheBust ? "?v=" + swCacheBust : "");
     }
     function swSetFrame(fi) {
       if (!swFrames.length) return;

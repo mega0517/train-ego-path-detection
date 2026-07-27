@@ -819,6 +819,143 @@ def api_switch_events():
     return jsonify(items)
 
 
+@app.route("/api/switch/crop_event", methods=["POST"])
+def api_switch_crop_event():
+    """이벤트 폴더의 모든 프레임을 같은 영역으로 잘라낸다.
+
+    캡뷰 영상은 운전실 창틀·와이퍼·계기판이 화면 가장자리를 덮는 경우가 많아
+    그대로 두면 검출이 크게 흔들린다(자동 라벨이 깨지는 프레임의 주된 원인).
+    한 프레임에서 정한 영역을 폴더 전체에 적용해 그 방해물을 잘라낸다.
+
+    원본은 <event>/orig_uncropped/ 에 처음 한 번만 보관하므로 여러 번 잘라도
+    언제든 완전 복원할 수 있다. 좌표는 현재(이미 잘린) 이미지 기준이며, 기존
+    라벨이 있으면 같은 만큼 평행이동해 어긋나지 않게 한다.
+    """
+    import json as _json
+    import shutil
+
+    ev = os.path.basename((request.form.get("event") or "").strip())
+    d = _event_dir(ev)
+    if not ev or not d:
+        return jsonify({"error": f"알 수 없는 이벤트: {ev}"}), 404
+    try:
+        left = int(request.form["left"]); top = int(request.form["top"])
+        right = int(request.form["right"]); bottom = int(request.form["bottom"])
+    except (KeyError, ValueError):
+        return jsonify({"error": "크롭 좌표가 올바르지 않습니다."}), 400
+
+    frames = sorted(f for f in os.listdir(d) if f.lower().endswith(".jpg"))
+    if not frames:
+        return jsonify({"error": "이벤트에 프레임이 없습니다."}), 400
+    with Image.open(os.path.join(d, frames[0])) as im:
+        W, H = im.size
+    left, top = max(0, left), max(0, top)
+    right, bottom = min(W - 1, right), min(H - 1, bottom)
+    if right - left < 32 or bottom - top < 32:
+        return jsonify({"error": "크롭 영역이 너무 작습니다 (최소 32px)."}), 400
+    if (left, top, right, bottom) == (0, 0, W - 1, H - 1):
+        return jsonify({"error": "크롭 영역이 전체 이미지와 같습니다."}), 400
+
+    backup = os.path.join(d, "orig_uncropped")
+    first_crop = not os.path.isdir(backup)
+    if first_crop:
+        os.makedirs(backup, exist_ok=True)
+        for fn in frames:
+            shutil.copy2(os.path.join(d, fn), os.path.join(backup, fn))
+
+    box = (left, top, right + 1, bottom + 1)
+    done = 0
+    for fn in frames:
+        fp = os.path.join(d, fn)
+        try:
+            with Image.open(fp) as im:
+                im.load()
+                im.crop(box).save(fp, quality=95)
+            done += 1
+        except OSError:
+            pass
+
+    # 라벨도 같은 만큼 옮긴다 (안 그러면 좌표가 통째로 어긋난다)
+    lp = os.path.join(d, "egopath_labels.json")
+    moved = 0
+    try:
+        with open(lp, encoding="utf-8") as f:
+            labels = _json.load(f)
+    except (OSError, ValueError):
+        labels = None
+    if isinstance(labels, dict) and labels:
+        nw, nh = right - left + 1, bottom - top + 1
+        out = {}
+        for fn, v in labels.items():
+            if not isinstance(v, dict):
+                continue
+            rails = {}
+            for side in ("left_rail", "right_rail"):
+                pts = [[int(x) - left, int(y) - top] for x, y in (v.get(side) or [])]
+                pts = [[min(max(0, x), nw - 1), min(max(0, y), nh - 1)] for x, y in pts]
+                rails[side] = pts
+            if len(rails["left_rail"]) >= 2 and len(rails["right_rail"]) >= 2:
+                out[fn] = rails
+                moved += 1
+        with open(lp + ".tmp", "w", encoding="utf-8") as f:
+            _json.dump(out, f)
+        os.replace(lp + ".tmp", lp)
+
+    # 누적 크롭 오프셋 기록 (원본 좌표계로 되돌릴 때 필요)
+    rec_path = os.path.join(d, "crop.json")
+    try:
+        with open(rec_path, encoding="utf-8") as f:
+            rec = _json.load(f)
+    except (OSError, ValueError):
+        rec = {"offset_x": 0, "offset_y": 0, "history": []}
+    rec["offset_x"] += left
+    rec["offset_y"] += top
+    rec["size"] = [right - left + 1, bottom - top + 1]
+    rec["history"].append({"left": left, "top": top, "right": right, "bottom": bottom,
+                           "from_size": [W, H]})
+    with open(rec_path, "w", encoding="utf-8") as f:
+        _json.dump(rec, f, indent=1)
+
+    # 캐시된 썸네일은 옛 크기라 지운다
+    if os.path.isdir(_SWITCH_THUMBS):
+        for t in os.listdir(_SWITCH_THUMBS):
+            if t.startswith(ev + "__"):
+                try:
+                    os.remove(os.path.join(_SWITCH_THUMBS, t))
+                except OSError:
+                    pass
+
+    return jsonify({"ok": True, "event": ev, "frames": done, "labels_shifted": moved,
+                    "size": [right - left + 1, bottom - top + 1],
+                    "backup_created": first_crop})
+
+
+@app.route("/api/switch/uncrop_event", methods=["POST"])
+def api_switch_uncrop_event():
+    """crop_event를 되돌린다 (orig_uncropped/ 의 원본을 제자리로)."""
+    import shutil
+    ev = os.path.basename((request.form.get("event") or "").strip())
+    d = _event_dir(ev)
+    if not ev or not d:
+        return jsonify({"error": f"알 수 없는 이벤트: {ev}"}), 404
+    backup = os.path.join(d, "orig_uncropped")
+    if not os.path.isdir(backup):
+        return jsonify({"error": "이 이벤트에는 크롭 기록이 없습니다."}), 404
+    n = 0
+    for fn in sorted(os.listdir(backup)):
+        if fn.lower().endswith(".jpg"):
+            shutil.move(os.path.join(backup, fn), os.path.join(d, fn))
+            n += 1
+    shutil.rmtree(backup, ignore_errors=True)
+    for extra in ("crop.json",):
+        try:
+            os.remove(os.path.join(d, extra))
+        except OSError:
+            pass
+    return jsonify({"ok": True, "event": ev, "restored": n,
+                    "note": "라벨 좌표는 크롭 기준이라 다시 만들어야 합니다."})
+
+
 @app.route("/api/switch/delete_event", methods=["POST"])
 def api_switch_delete_event():
     """갤러리에서 이벤트 하나를 치운다 (완전 삭제가 아니라 _trash로 이동).
