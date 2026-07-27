@@ -2596,7 +2596,7 @@ def api_label_sam2_step():
                     continue
                 m = (logits[0] > 0.0).cpu().numpy()
                 m = m[0] if m.ndim == 3 else m
-                l2, r2 = _sam2_rails_from_mask(m)
+                l2, r2 = _sam2_rails_from_mask(m, rdp_eps=0.0)
                 if l2 and r2:
                     data[names[fidx]] = {"left_rail": l2, "right_rail": r2}
                     updated.append(names[fidx])
@@ -2768,7 +2768,7 @@ def _sam2_predictor():
     return _SAM2["pred"], _SAM2["dev"]
 
 
-def _sam2_rails_from_mask(mask, n=48):
+def _sam2_rails_from_mask(mask, n=48, rdp_eps=0.0):
     """left/right boundary of the track mask on an n-row grid, RDP-simplified, with
     the lowest point extended to the frame bottom (training needs full-height rails)."""
     import numpy as np
@@ -2787,7 +2787,9 @@ def _sam2_rails_from_mask(mask, n=48):
     for rail in (left, right):
         if rail[-1][1] < H - 1:
             rail.append([rail[-1][0], H - 1])  # extend down to the last row
-    return _rdp_simplify(left), _rdp_simplify(right)
+    if rdp_eps <= 0:  # 평가용 GT는 단순화하지 않는다 (10px 근사는 IoU를 ~3% 흔든다)
+        return left, right
+    return _rdp_simplify(left, eps=rdp_eps), _rdp_simplify(right, eps=rdp_eps)
 
 
 @app.route("/api/label/sam2", methods=["POST"])
@@ -2807,6 +2809,11 @@ def api_label_sam2():
         return jsonify({"error": "Invalid annotations path."}), 400
     if not os.path.exists(_SAM2_CKPT):
         return jsonify({"error": "SAM2 checkpoint missing (run setup)."}), 400
+
+    try:
+        sam2_rdp_eps = max(0.0, float(request.form.get("rdp_eps", 0.0)))
+    except ValueError:
+        sam2_rdp_eps = 0.0
 
     def event_stream():
         import json
@@ -2847,7 +2854,7 @@ def api_label_sam2():
                 for fidx, _obj_ids, logits in pred.propagate_in_video(state):
                     m = (logits[0] > 0.0).cpu().numpy()
                     m = m[0] if m.ndim == 3 else m
-                    L, R = _sam2_rails_from_mask(m)
+                    L, R = _sam2_rails_from_mask(m, rdp_eps=sam2_rdp_eps)
                     if L and R:
                         data[files[fidx]] = {"left_rail": L, "right_rail": R}
                         done += 1
