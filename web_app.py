@@ -2613,13 +2613,15 @@ def api_label_sam2_step():
 
 @app.route("/api/label/detect_model", methods=["POST"])
 def api_label_detect_model():
-    """Auto-label every frame by running a trained model (default brilliant-horse-15)
+    """Auto-label every frame by running a trained model (default twinkling-rocket-21)
     and extracting the left/right rails from its prediction. No seed, no tracking."""
     import numpy as np
 
     folder = (request.form.get("folder") or "").strip()
     annots = (request.form.get("annots") or "").strip()
-    model_name = (request.form.get("model") or "brilliant-horse-15").strip()
+    # twinkling-rocket-21 scores best on the switch clips by a wide margin
+    # (dense-GT IoU 0.958 vs 0.901 for the next model), so it is the default seed.
+    model_name = (request.form.get("model") or "twinkling-rocket-21").strip()
     device = (request.form.get("device") or
               ("cuda:0" if "cuda:0" in available_devices() else "cpu"))
     crop_mode, crop_coords = _parse_crop(request.form)
