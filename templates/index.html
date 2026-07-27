@@ -522,6 +522,14 @@
       #swLb.cropping #swCropLayer{display:block}
       #swLb #swCropBox{position:absolute;border:2px dashed #ffd54f;background:rgba(255,213,79,.14);
         pointer-events:none;display:none}
+      #swLb #swCropBox i{position:absolute;width:10px;height:10px;background:#ffd54f;
+        border:1px solid #7a5b00;border-radius:2px}
+      #swLb #swCropBox i.nw{left:-6px;top:-6px}   #swLb #swCropBox i.n{left:calc(50% - 5px);top:-6px}
+      #swLb #swCropBox i.ne{right:-6px;top:-6px}  #swLb #swCropBox i.e{right:-6px;top:calc(50% - 5px)}
+      #swLb #swCropBox i.se{right:-6px;bottom:-6px} #swLb #swCropBox i.s{left:calc(50% - 5px);bottom:-6px}
+      #swLb #swCropBox i.sw{left:-6px;bottom:-6px} #swLb #swCropBox i.w{left:-6px;top:calc(50% - 5px)}
+      #swLb .cropbar input{width:66px;background:rgba(255,255,255,.1);color:#e6edf3;
+        border:1px solid #3a4658;border-radius:6px;padding:5px 6px;font-size:12px}
       #swLb .cropbar{display:none;gap:10px;align-items:center;padding:6px 6px 0;
         font-size:13px;color:#e6edf3;flex-wrap:wrap}
       #swLb.cropping .cropbar{display:flex}
@@ -571,10 +579,15 @@
       <button class="nav next" id="swNext">›</button>
       <div class="imgwrap">
         <img id="swImg" alt="">
-        <div id="swCropLayer"><div id="swCropBox"></div></div>
+        <div id="swCropLayer"><div id="swCropBox">
+          <i class="nw"></i><i class="n"></i><i class="ne"></i><i class="e"></i>
+          <i class="se"></i><i class="s"></i><i class="sw"></i><i class="w"></i>
+        </div></div>
       </div>
       <div class="bar cropbar">
-        <span>드래그해 영역을 지정하세요.</span>
+        <span>드래그로 지정 · 모서리를 끌어 조절 · 안쪽을 끌어 이동</span>
+        <input type="number" id="swCropL" title="왼쪽 x"><input type="number" id="swCropT" title="위 y">
+        <input type="number" id="swCropR" title="오른쪽 x"><input type="number" id="swCropB" title="아래 y">
         <span class="mono" id="swCropInfo">—</span>
         <span style="flex:1"></span>
         <button id="swCropApply" class="sw-evbtn">폴더 전체에 적용</button>
@@ -1744,18 +1757,42 @@
           const p = swCropPoint(e);
           if (!p) return;
           e.preventDefault();
-          swCropDrag = p;
+          const mode = swCropHit(e);
+          swCropDrag = { mode, start: p, orig: swCropSel && { ...swCropSel } };
+          if (mode === "new") { swCropSel = { left: p[0], top: p[1], right: p[0], bottom: p[1] }; }
         };
         layer.onmousemove = (e) => {
-          if (!swCropDrag) return;
+          const g = swImgGeom();
+          if (!g) return;
+          if (!swCropDrag) { layer.style.cursor = SW_CURSOR[swCropHit(e)] || "crosshair"; return; }
           const p = swCropPoint(e);
           if (!p) return;
-          swCropSel = { left: Math.min(swCropDrag[0], p[0]), top: Math.min(swCropDrag[1], p[1]),
-                        right: Math.max(swCropDrag[0], p[0]), bottom: Math.max(swCropDrag[1], p[1]) };
+          const { mode, start, orig } = swCropDrag;
+          if (mode === "new") {
+            swCropSel = swCropNormalize(
+              { left: start[0], top: start[1], right: p[0], bottom: p[1] }, g);
+          } else if (mode === "move") {
+            const w = orig.right - orig.left, h = orig.bottom - orig.top;
+            // 크기를 유지한 채 이동하되 이미지 밖으로 나가지 않게 붙잡는다
+            const dx = Math.min(Math.max(p[0] - start[0], -orig.left), g.nw - 1 - orig.right);
+            const dy = Math.min(Math.max(p[1] - start[1], -orig.top), g.nh - 1 - orig.bottom);
+            swCropSel = { left: orig.left + dx, top: orig.top + dy,
+                          right: orig.left + dx + w, bottom: orig.top + dy + h };
+          } else {
+            const sel = { ...orig };
+            if (mode.includes("w")) sel.left = p[0];
+            if (mode.includes("e")) sel.right = p[0];
+            if (mode.includes("n")) sel.top = p[1];
+            if (mode.includes("s")) sel.bottom = p[1];
+            swCropSel = swCropNormalize(sel, g);
+          }
           swCropDraw();
         };
         layer.onmouseup = () => { swCropDrag = null; };
         layer.onmouseleave = () => { swCropDrag = null; };
+        ["swCropL", "swCropT", "swCropR", "swCropB"].forEach((id) => {
+          $(id).onchange = swCropSetFromInputs;
+        });
         window.addEventListener("resize", () => { if (swCropSel) swCropDraw(); });
         $("swDelEv").onclick = async () => {
           const x = swView[swEv];
@@ -1908,7 +1945,8 @@
     // 캡뷰 영상은 창틀·와이퍼·계기판이 가장자리를 덮어 검출을 망치는 경우가 많다.
     // 한 프레임에서 고른 영역을 이벤트의 모든 프레임에 적용한다.
     let swCropSel = null;      // {left, top, right, bottom} 원본 픽셀 좌표
-    let swCropDrag = null;
+    let swCropDrag = null;     // {mode, start:[x,y], orig:{...}} 드래그 중 상태
+    const SW_HANDLE_PX = 10;   // 모서리를 잡았다고 볼 화면상 여유(px)
 
     function swImgGeom() {
       // object-fit:contain 이라 실제 그려진 영역은 레터박스 안쪽이다.
@@ -1932,8 +1970,10 @@
       box.style.width = (swCropSel.right - swCropSel.left + 1) * g.scale + "px";
       box.style.height = (swCropSel.bottom - swCropSel.top + 1) * g.scale + "px";
       $("swCropInfo").textContent =
-        `${swCropSel.left},${swCropSel.top} → ${swCropSel.right},${swCropSel.bottom}`
-        + ` (${swCropSel.right - swCropSel.left + 1}×${swCropSel.bottom - swCropSel.top + 1}, 원본 ${g.nw}×${g.nh})`;
+        `${swCropSel.right - swCropSel.left + 1}×${swCropSel.bottom - swCropSel.top + 1}`
+        + ` (원본 ${g.nw}×${g.nh})`;
+      [["swCropL", "left"], ["swCropT", "top"], ["swCropR", "right"], ["swCropB", "bottom"]]
+        .forEach(([id, k]) => { const el = $(id); if (el !== document.activeElement) el.value = swCropSel[k]; });
     }
     function swCropPoint(e) {
       const g = swImgGeom();
@@ -1942,6 +1982,39 @@
       const y = (e.clientY - g.r.top - g.oy) / g.scale;
       return [Math.round(Math.min(Math.max(0, x), g.nw - 1)),
               Math.round(Math.min(Math.max(0, y), g.nh - 1))];
+    }
+    // 클릭 위치가 기존 선택의 어느 부분인지: 모서리(리사이즈) / 안쪽(이동) / 그 외(새로 그리기)
+    function swCropHit(e) {
+      const g = swImgGeom();
+      if (!swCropSel || !g) return "new";
+      const p = swCropPoint(e);
+      if (!p) return "new";
+      const tol = SW_HANDLE_PX / g.scale;
+      const { left, top, right, bottom } = swCropSel;
+      if (p[0] < left - tol || p[0] > right + tol || p[1] < top - tol || p[1] > bottom + tol) return "new";
+      const v = Math.abs(p[1] - top) <= tol ? "n" : Math.abs(p[1] - bottom) <= tol ? "s" : "";
+      const h = Math.abs(p[0] - left) <= tol ? "w" : Math.abs(p[0] - right) <= tol ? "e" : "";
+      return (v + h) || "move";
+    }
+    const SW_CURSOR = { n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+                        nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize",
+                        move: "move", new: "crosshair" };
+    function swCropNormalize(sel, g) {
+      // 좌우/상하가 뒤집혔으면 바로잡고 이미지 밖으로 나가지 않게 자른다
+      let { left, top, right, bottom } = sel;
+      if (left > right) [left, right] = [right, left];
+      if (top > bottom) [top, bottom] = [bottom, top];
+      return { left: Math.max(0, Math.round(left)), top: Math.max(0, Math.round(top)),
+               right: Math.min(g.nw - 1, Math.round(right)), bottom: Math.min(g.nh - 1, Math.round(bottom)) };
+    }
+    function swCropSetFromInputs() {
+      const g = swImgGeom();
+      if (!g) return;
+      const v = (id) => parseInt($(id).value, 10);
+      const sel = { left: v("swCropL"), top: v("swCropT"), right: v("swCropR"), bottom: v("swCropB") };
+      if (Object.values(sel).some((n) => !Number.isFinite(n))) return;
+      swCropSel = swCropNormalize(sel, g);
+      swCropDraw();
     }
     function swCropMode(on) {
       $("swLb").classList.toggle("cropping", on);
