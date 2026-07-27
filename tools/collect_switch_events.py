@@ -99,6 +99,68 @@ def screen(args):
     return 0
 
 
+def rail_lines(path):
+    """Count rail-like line segments in the near field.
+
+    A plain double track shows a couple of long converging lines; a turnout or
+    yard shows many more. Ranking coarse frames by this cuts the frames a human
+    has to look at from ~900 to one sheetful, without needing to understand the
+    scene.
+    """
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return 0.0
+    h, w = img.shape[:2]
+    band = img[int(0.55 * h):h, :]
+    band = cv2.GaussianBlur(band, (3, 3), 0)
+    edges = cv2.Canny(band, 60, 160)
+    segs = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=40,
+                           minLineLength=max(12, band.shape[0] // 4), maxLineGap=6)
+    if segs is None:
+        return 0.0
+    total = 0.0
+    for x1, y1, x2, y2 in segs[:, 0]:
+        ang = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+        if 20 < ang < 160:          # rails run away from the camera, not across it
+            total += np.hypot(x2 - x1, y2 - y1)
+    return float(total / band.shape[0])
+
+
+def rank(args):
+    """Shortlist the coarse frames most likely to hold a switch."""
+    info = json.load(open(os.path.join(args.work, "screen.json")))
+    coarse = os.path.join(args.work, "coarse")
+    cells = sorted(f for f in os.listdir(coarse) if f.endswith(".jpg"))
+    scored = [(i, rail_lines(os.path.join(coarse, fn))) for i, fn in enumerate(cells)]
+    scored.sort(key=lambda t: -t[1])
+    # 이웃한 칸이 몰리지 않도록 최소 간격을 두고 고른다
+    picked, used = [], set()
+    for i, sc in scored:
+        if any(abs(i - j) < args.min_gap for j in used):
+            continue
+        picked.append((i, sc)); used.add(i)
+        if len(picked) >= SHEET_COLS * SHEET_ROWS:
+            break
+    picked.sort()
+    canvas = np.zeros((CELL_H * SHEET_ROWS, CELL_W * SHEET_COLS, 3), np.uint8)
+    for k, (i, sc) in enumerate(picked):
+        img = cv2.imread(os.path.join(coarse, cells[i]))
+        if img is None:
+            continue
+        img = cv2.resize(img, (CELL_W, CELL_H))
+        cv2.rectangle(img, (0, 0), (86, 16), (0, 0, 0), -1)
+        cv2.putText(img, f"{i} {sc:.0f}", (3, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                    (0, 255, 255), 1, cv2.LINE_AA)
+        r, c = divmod(k, SHEET_COLS)
+        canvas[r * CELL_H:(r + 1) * CELL_H, c * CELL_W:(c + 1) * CELL_W] = img
+    out = os.path.join(args.work, "ranked.jpg")
+    cv2.imwrite(out, canvas, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    json.dump([{"cell": i, "score": round(sc, 1), "t": i * info["coarse_every"]}
+               for i, sc in picked], open(os.path.join(args.work, "ranked.json"), "w"), indent=1)
+    print(f"{len(cells)} cells -> top {len(picked)} on {out}")
+    return 0
+
+
 def cut(args):
     info = json.load(open(os.path.join(args.work, "screen.json")))
     every = info["coarse_every"]
@@ -115,11 +177,31 @@ def cut(args):
     groups.append(cur)
     print(f"{len(cells)} cells -> {len(groups)} events")
 
+    # 이미 데이터셋에 있는 같은 영상의 이벤트와 겹치면 다시 만들지 않는다
+    taken = []
+    sw = "/data3/bhkim/datasets/Rail_switch_crawling/switch_events"
+    try:
+        for e in json.load(open(os.path.join(sw, "index.json"))):
+            if e.get("video_id") != args.video_id:
+                continue
+            m = os.path.join(sw, e["event"], "manifest.json")
+            if os.path.exists(m):
+                t = json.load(open(m)).get("center_time_s")
+                if t is not None:
+                    taken.append(float(t))
+    except (OSError, ValueError):
+        pass
+    if taken:
+        print(f"  이미 보유한 이벤트 {len(taken)}개와 {args.skip_within:.0f}초 이내면 건너뜀")
+
     video = video_path(args.work, args.video_id)
     os.makedirs(args.out_dir, exist_ok=True)
     made = []
     for gi, g in enumerate(groups):
         center = (sum(g) / len(g)) * every
+        if any(abs(center - t) < args.skip_within for t in taken):
+            print(f"  @{center:.0f}s: 기존 이벤트와 겹쳐 건너뜀")
+            continue
         start = max(0.0, center - WINDOW_S / 2)
         name = f"new{args.video_id}_{gi:02d}"
         dst = os.path.join(args.out_dir, name)
@@ -157,11 +239,15 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("screen"); s.add_argument("video_id"); s.add_argument("work")
     s.add_argument("--max-height", type=int, default=1080)
+    k = sub.add_parser("rank"); k.add_argument("work")
+    k.add_argument("--min-gap", type=int, default=4)
     c = sub.add_parser("cut"); c.add_argument("video_id"); c.add_argument("work")
     c.add_argument("out_dir"); c.add_argument("--cells", required=True)
     c.add_argument("--min-detail", type=float, default=MIN_DETAIL)
+    c.add_argument("--skip-within", type=float, default=25.0,
+                   help="이미 보유한 같은 영상 이벤트와 이 초 이내면 건너뛴다")
     a = ap.parse_args()
-    return screen(a) if a.cmd == "screen" else cut(a)
+    return {"screen": screen, "rank": rank, "cut": cut}[a.cmd](a)
 
 
 if __name__ == "__main__":
