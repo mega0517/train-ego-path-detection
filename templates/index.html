@@ -1747,6 +1747,7 @@
         $("swRoute").onchange = e => { swState.route = e.target.value; swRender(); };
         $("swSearch").oninput = e => { swState.q = e.target.value.trim().toLowerCase(); swRender(); };
         $("swClose").onclick = swCloseLb;
+        $("swImg").addEventListener("load", swCropOnImageLoad);
         $("swCropBtn").onclick = () => swCropMode(!$("swLb").classList.contains("cropping"));
         $("swCropApply").onclick = swCropApply;
         $("swCropReset").onclick = () => { swCropSel = null; swCropDraw(); };
@@ -1923,6 +1924,9 @@
     }
     function swOpenEv(i) {
       swPause();
+      // 이벤트가 바뀌면 이전 영역은 그 이미지 기준이므로 버리고,
+      // 크롭 작업 중이라면 마지막에 쓴 영역을 새 이미지에 다시 씌운다.
+      swCropSel = null;
       if (i < 0) i = swView.length - 1;
       if (i >= swView.length) i = 0;
       swEv = i;
@@ -1947,6 +1951,8 @@
     let swCropSel = null;      // {left, top, right, bottom} 원본 픽셀 좌표
     let swCropDrag = null;     // {mode, start:[x,y], orig:{...}} 드래그 중 상태
     const SW_HANDLE_PX = 10;   // 모서리를 잡았다고 볼 화면상 여유(px)
+    let swLastCrop = null;     // 마지막으로 적용한 영역 (다음 이벤트에 그대로 물려준다)
+    let swCropSkipRestore = false;  // 방금 적용해 새로 불러온 이미지에는 씌우지 않는다
 
     function swImgGeom() {
       // object-fit:contain 이라 실제 그려진 영역은 레터박스 안쪽이다.
@@ -2019,7 +2025,12 @@
     function swCropMode(on) {
       $("swLb").classList.toggle("cropping", on);
       $("swCropBtn").classList.toggle("on", on);
-      if (!on) { swCropSel = null; swCropDraw(); }
+      if (!on) { swCropSel = null; swCropDraw(); return; }
+      if (!swCropSel && swLastCrop) {   // 직전에 쓴 영역을 초기값으로
+        const g = swImgGeom();
+        if (g) swCropSel = swCropNormalize({ ...swLastCrop }, g);
+      }
+      swCropDraw();
     }
     async function swCropApply() {
       const x = swView[swEv];
@@ -2035,9 +2046,14 @@
         const d = await (await fetch("/api/switch/crop_event", { method: "POST", body: fd })).json();
         if (d.error) { alert(d.error); return; }
         alert(`${d.frames}개 프레임을 ${d.size[0]}×${d.size[1]} 로 잘랐습니다.`
-              + (d.labels_shifted ? `\n라벨 ${d.labels_shifted}개의 좌표도 함께 옮겼습니다.` : ""));
+              + (d.labels_shifted ? `\n라벨 ${d.labels_shifted}개의 좌표도 함께 옮겼습니다.` : "")
+              + `\n\n이 영역을 기억했습니다 — '이벤트 ▶'로 넘어가면 같은 영역이 잡힙니다.`);
+        swLastCrop = { ...c };   // 다음 이벤트에서 같은 영역으로 시작
         swCacheBust = Date.now();
-        swCropMode(false);
+        // 크롭 모드는 켠 채로 두어 '이벤트 ▶'로 바로 이어서 작업할 수 있게 하되,
+        // 방금 잘린 이미지 위에 옛 영역이 남지 않도록 선택만 지운다.
+        swCropSel = null;
+        swCropSkipRestore = true;
         swSetFrame(swFi);
         swRender();            // 갤러리 카드의 대표 이미지도 새 크롭으로 갱신
       } catch (e) { alert("크롭 실패: " + e.message); }
@@ -2056,6 +2072,17 @@
       swCropMode(false);
       swSetFrame(swFi);
       swRender();
+    }
+
+    function swCropOnImageLoad() {
+      if (!$("swLb").classList.contains("cropping")) return;
+      if (swCropSkipRestore) {
+        swCropSkipRestore = false;      // 방금 자른 이미지 위에 옛 영역을 씌우지 않는다
+      } else if (!swCropSel && swLastCrop) {
+        const g = swImgGeom();          // naturalWidth는 로드 후에야 유효하다
+        if (g) swCropSel = swCropNormalize({ ...swLastCrop }, g);
+      }
+      swCropDraw();   // 이미지 크기가 달라졌을 수 있으니 항상 다시 그린다
     }
 
     function swFrameUrl(fn) {
