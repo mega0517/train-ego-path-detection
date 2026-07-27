@@ -113,6 +113,100 @@ class RegressionNet(nn.Module):
         return reg
 
 
+
+class MultiPathRegressionNet(nn.Module):
+    """RegressionNet with K ego-path hypotheses instead of one, plus a score head.
+
+    Where the ego-path is ambiguous -- most importantly at a facing switch, where
+    the train may take either branch -- a single regressed path can only predict
+    something between the branches, which is on neither track. Emitting K paths
+    lets the network keep both options open; a winner-takes-all loss (see
+    MultiHypothesisRegressionLoss) makes the heads specialise without needing any
+    branch annotation, and the score head learns which one is right per frame.
+
+    Everything up to the hidden fully connected layer is identical to
+    RegressionNet, so a trained single-path model can warm-start this one.
+    """
+
+    def __init__(
+        self,
+        backbone,
+        input_shape,
+        anchors,
+        pool_channels,
+        fc_hidden_size,
+        n_hypotheses=2,
+        pretrained=False,
+    ):
+        super(MultiPathRegressionNet, self).__init__()
+        if backbone.startswith("efficientnet"):
+            self.backbone = EfficientNetBackbone(
+                version=backbone[13:], pretrained=pretrained
+            )
+        elif backbone.startswith("resnet"):
+            self.backbone = ResNetBackbone(version=backbone[6:], pretrained=pretrained)
+        else:
+            raise NotImplementedError
+        self.n_hypotheses = n_hypotheses
+        self.path_dim = anchors * 2 + 1
+        self.pool = nn.Conv2d(
+            in_channels=self.backbone.out_channels[-1],
+            out_channels=pool_channels,
+            kernel_size=1,
+        )
+        self.fc = nn.Sequential(
+            nn.Linear(
+                pool_channels
+                * math.ceil(input_shape[1] / self.backbone.reduction_factor)
+                * math.ceil(input_shape[2] / self.backbone.reduction_factor),
+                fc_hidden_size,
+            ),
+            nn.ReLU(inplace=True),
+            nn.Linear(fc_hidden_size, n_hypotheses * self.path_dim + n_hypotheses),
+        )
+
+    def split_output(self, out):
+        """(B, K*D + K) -> paths (B, K, D), scores (B, K)."""
+        k = self.n_hypotheses
+        return out[:, :-k].reshape(out.size(0), k, self.path_dim), out[:, -k:]
+
+    def load_single_path_state(self, state, noise=0.01):
+        """Warm-start from a trained RegressionNet checkpoint.
+
+        Backbone, pooling and the hidden layer are copied as they are; the final
+        layer is replicated once per hypothesis with a little noise, so the heads
+        start from the trained single-path solution but are not exactly tied --
+        identical heads would stay identical under the winner-takes-all loss,
+        since only one of them is ever the winner.
+        """
+        state = {k.replace("_orig_mod.", "").replace("module.", ""): v
+                 for k, v in state.items()}
+        own = self.state_dict()
+        copied = []
+        for key, val in state.items():
+            if key in own and own[key].shape == val.shape:
+                own[key] = val.clone()
+                copied.append(key)
+        for suffix, out_slice in (("weight", None), ("bias", None)):
+            src = state.get(f"fc.2.{suffix}")
+            if src is None:
+                continue
+            dst = own[f"fc.2.{suffix}"]
+            for k in range(self.n_hypotheses):
+                lo = k * self.path_dim
+                chunk = src.clone()
+                chunk = chunk + noise * torch.randn_like(chunk) * chunk.std()
+                dst[lo : lo + self.path_dim] = chunk
+            dst[self.n_hypotheses * self.path_dim :] = 0.0  # scores start neutral
+        self.load_state_dict(own)
+        return len(copied)
+
+    def forward(self, x):
+        x = self.backbone(x)[0]
+        fea = self.pool(x).flatten(start_dim=1)
+        return self.fc(fea)
+
+
 class SegmentationNet(nn.Module):
     def __init__(
         self,

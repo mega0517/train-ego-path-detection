@@ -11,6 +11,7 @@ from PIL import Image
 from torchvision.transforms import v2 as transforms
 
 from ..nn.model import (
+    MultiPathRegressionNet,
     ClassificationNet,
     ClassificationNetRNN,
     RegressionNet,
@@ -99,6 +100,7 @@ class Detector:
         with open(os.path.join(self.model_path, "config.yaml")) as f:
             self.config = yaml.safe_load(f)
         self.temporal = self.config.get("temporal", False)
+        self.n_hypotheses = int(self.config.get("n_hypotheses", 1))
         if self.temporal:
             self.seq_len = self.config["seq_len"]
             self.path_buffer = deque(maxlen=self.seq_len)
@@ -180,6 +182,15 @@ class Detector:
                 classes=self.config["classes"],
                 pool_channels=self.config["pool_channels"],
                 fc_hidden_size=self.config["fc_hidden_size"],
+            )
+        elif self.config["method"] == "regression" and self.n_hypotheses > 1:
+            model = MultiPathRegressionNet(
+                backbone=self.config["backbone"],
+                input_shape=tuple(self.config["input_shape"]),
+                anchors=self.config["anchors"],
+                pool_channels=self.config["pool_channels"],
+                fc_hidden_size=self.config["fc_hidden_size"],
+                n_hypotheses=self.n_hypotheses,
             )
         elif self.config["method"] == "regression":
             model = RegressionNet(
@@ -406,6 +417,35 @@ class Detector:
         self.cuda.memcpy_dtoh(pred, self.bindings[1])  # copy output to CPU
         return pred
 
+    def split_hypotheses(self, pred):
+        """(1, K*D + K) -> list of K (1, D) path vectors, and the K scores."""
+        k = self.n_hypotheses
+        scores = pred[0, -k:]
+        paths = pred[0, :-k].reshape(k, -1)
+        return [paths[i][None, :] for i in range(k)], scores
+
+    def detect_hypotheses(self, img):
+        """All K ego-path hypotheses for an image, plus their scores.
+
+        Used to separate "did the model propose the right path at all" (oracle)
+        from "did it pick the right one" (selection), which is the decomposition
+        that says whether a temporal selector is worth building.
+        """
+        if self.n_hypotheses <= 1:
+            return [self.detect(img)], np.ones(1, dtype=np.float32)
+        original_shape = img.size
+        crop_coords = self.get_crop_coords()
+        cropped = img
+        if crop_coords is not None:
+            xleft, ytop, xright, ybottom = crop_coords
+            cropped = img.crop((xleft, ytop, xright + 1, ybottom + 1))
+        pred = self.infer_model_pytorch(cropped)
+        paths, scores = self.split_hypotheses(pred)
+        results = [self.pred_to_result(p, crop_coords, original_shape) for p in paths]
+        if isinstance(self.crop_coords, Autocropper):
+            self.crop_coords.update(original_shape, results[int(np.argmax(scores))])
+        return results, scores
+
     def detect(self, img):
         """Detects the train ego-path on an image using the model.
 
@@ -432,6 +472,11 @@ class Detector:
                 pred = self.infer_temporal_base_pytorch(img)
         elif self.runtime == "tensorrt":
             pred = self.infer_model_tensorrt(img)
+
+        if self.n_hypotheses > 1:
+            paths, scores = self.split_hypotheses(pred)
+            pred = paths[int(np.argmax(scores))]  # score-selected hypothesis
+            self.last_scores = scores
 
         pred = self.apply_smoothing(pred, crop_coords)
 

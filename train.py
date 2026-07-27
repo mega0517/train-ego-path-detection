@@ -14,9 +14,11 @@ import yaml
 from src.nn.loss import (
     BinaryDiceLoss,
     CrossEntropyLoss,
+    MultiHypothesisRegressionLoss,
     TrainEgoPathRegressionLoss,
 )
 from src.nn.model import (
+    MultiPathRegressionNet,
     ClassificationNet,
     ClassificationNetRNN,
     RegressionNet,
@@ -82,6 +84,27 @@ def parse_arguments():
         action="store_true",
         help="With --temporal, also fine-tune the base per-frame weights instead of only training the RNN (base is frozen by default).",
     )
+    parser.add_argument(
+        "--n-hypotheses",
+        type=int,
+        default=1,
+        help="Regression only: predict this many ego-path hypotheses plus a score per"
+        " hypothesis, trained winner-takes-all. 1 (default) keeps the single-path model."
+        " Use >1 where the path is genuinely ambiguous (facing switches), so the model"
+        " can keep both branches instead of regressing between them.",
+    )
+    parser.add_argument(
+        "--init-from",
+        type=str,
+        default=None,
+        help="Warm-start from a trained single-path model in egopath/weights (e.g."
+        " chromatic-laughter-5); its final layer is replicated per hypothesis.",
+    )
+    parser.add_argument("--wta-epsilon", type=float, default=0.05,
+                        help="Weight kept on the losing hypotheses (0 = pure WTA, which"
+                             " tends to starve and kill the losing heads).")
+    parser.add_argument("--score-weight", type=float, default=0.1,
+                        help="Weight of the hypothesis-score cross-entropy term.")
     parser.add_argument(
         "--seq-stride",
         type=int,
@@ -201,6 +224,12 @@ def main(args):
         config["base_model"] = args.base_model
         config["freeze_base"] = not args.finetune_base
 
+    if args.n_hypotheses > 1:
+        if method != "regression" or args.temporal:
+            raise ValueError("--n-hypotheses is implemented for non-temporal regression")
+        config["n_hypotheses"] = args.n_hypotheses
+        config["wta_epsilon"] = args.wta_epsilon
+        config["score_weight"] = args.score_weight
     if args.temporal and args.seq_stride is not None:
         config["seq_stride"] = args.seq_stride
         config["real_sequences"] = True
@@ -373,6 +402,25 @@ def main(args):
                 rnn_hidden=config["rnn_hidden"],
                 rnn_layers=config["rnn_layers"],
             ).to(device)
+        elif args.n_hypotheses > 1:
+            model = MultiPathRegressionNet(
+                backbone=config["backbone"],
+                input_shape=tuple(config["input_shape"]),
+                anchors=config["anchors"],
+                pool_channels=config["pool_channels"],
+                fc_hidden_size=config["fc_hidden_size"],
+                n_hypotheses=config["n_hypotheses"],
+                pretrained=config["pretrained"],
+            )
+            if args.init_from:
+                ckpt = os.path.join(
+                    base_path, "egopath", "weights", args.init_from, "best.pt"
+                )
+                copied = model.load_single_path_state(
+                    torch.load(ckpt, map_location="cpu")
+                )
+                logger.info(f"\n[multi-path] warm-started {copied} tensors from {args.init_from}")
+            model = model.to(device)
         else:
             model = RegressionNet(
                 backbone=config["backbone"],
@@ -496,6 +544,13 @@ def main(args):
         )
         if config["perspective_weight_limit_percentile"] is not None:
             set_seeds(config["seed"])  # reset random state
+        if args.n_hypotheses > 1:
+            criterion = MultiHypothesisRegressionLoss(
+                criterion,
+                n_hypotheses=config["n_hypotheses"],
+                epsilon=config["wta_epsilon"],
+                score_weight=config["score_weight"],
+            )
     elif method == "classification":
         criterion = CrossEntropyLoss()
     elif method == "segmentation":
