@@ -281,6 +281,22 @@
     /* Server folder browser */
     .browser { margin-top: 8px; border: 1px solid var(--border); border-radius: 6px;
       max-height: 220px; overflow-y: auto; background: #fff; font-size: 13px; }
+    /* Folder picker in a modal: the sidebar panel was only 220px tall and shared
+       the column with every other control, so deep paths meant scrolling twice. */
+    #brOverlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 60;
+      display: none; align-items: center; justify-content: center; }
+    #brOverlay.open { display: flex; }
+    #brOverlay .box { background: var(--panel); border-radius: 10px; overflow: hidden;
+      width: min(760px, 94vw); height: min(78vh, 680px); display: flex; flex-direction: column;
+      box-shadow: 0 12px 44px rgba(0,0,0,.45); }
+    #brOverlay .head { display: flex; justify-content: space-between; align-items: center;
+      gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+    #brOverlay .head h3 { margin: 0; font-size: 15px; }
+    #brOverlay .head .x { background: #607d8b; color: #fff; border: none; border-radius: 6px;
+      padding: 5px 12px; cursor: pointer; font-size: 13px; }
+    #brOverlay .body { flex: 1; overflow: auto; padding: 12px; }
+    #brOverlay .browser { display: block; margin-top: 0; max-height: none; border: none; }
+    #brOverlay .br-item { padding: 9px 10px; font-size: 14px; }
     .br-head { display: flex; gap: 6px; align-items: center; padding: 6px 8px;
       border-bottom: 1px solid var(--border); background: #f7f9fb; position: sticky; top: 0; }
     .br-path { flex: 1; font-family: monospace; font-size: 11px; color: var(--muted);
@@ -960,6 +976,16 @@
     </main>
   </div>
 
+  <div id="brOverlay">
+    <div class="box">
+      <div class="head">
+        <h3 id="brTitle">폴더 선택</h3>
+        <button class="x" id="brCloseBtn">닫기 ✕</button>
+      </div>
+      <div class="body"><div class="browser" id="brBrowser"></div></div>
+    </div>
+  </div>
+
   <script>
     const $ = (id) => document.getElementById(id);
     let selectedModel = null;
@@ -1110,10 +1136,28 @@
 
     // Server folder browser — navigate folders and pick one (no typing needed).
     // Parameterised so both the inference and training pages can reuse it.
+    // The folder picker can render either into a sidebar panel or into the modal
+    // (#brBrowser); picking a folder must close whichever one is showing.
+    function closeBrowseModal() { $("brOverlay").classList.remove("open"); }
+    document.addEventListener("DOMContentLoaded", () => {
+      const ov = $("brOverlay");
+      if (!ov) return;
+      $("brCloseBtn").onclick = closeBrowseModal;
+      ov.onclick = (e) => { if (e.target === ov) closeBrowseModal(); };  // backdrop only
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && ov.classList.contains("open")) closeBrowseModal();
+      });
+    });
+    function openBrowseModal(path, targetId, title) {
+      $("brTitle").textContent = title || "폴더 선택";
+      $("brOverlay").classList.add("open");
+      openBrowse(path || "", targetId, "brBrowser");
+    }
     function pickServerFolder(path, targetId, browserId) {
       const el = $(targetId);
       el.value = path; el.title = path;
-      $(browserId).style.display = "none";
+      if (browserId === "brBrowser") closeBrowseModal();
+      else $(browserId).style.display = "none";
       if (typeof pathTail === "function") pathTail(el);
       if (el.onchange) el.onchange();
     }
@@ -1162,7 +1206,7 @@
     }
     $("browseBtn").onclick = () => {
       if ($("browser").style.display === "block") { $("browser").style.display = "none"; return; }
-      openBrowse($("serverFolder").value.trim() || "", "serverFolder", "browser");
+      openBrowseModal($("serverFolder").value.trim(), "serverFolder", "서버 폴더 선택");
     };
 
     $("cropMode").onchange = () => {
@@ -3259,7 +3303,7 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
     };
         $("trBrowseBtn").onclick = () => {
       if ($("trBrowser").style.display === "block") { $("trBrowser").style.display = "none"; return; }
-      openBrowse($("trImages").value.trim() || "", "trImages", "trBrowser");
+      openBrowseModal($("trImages").value.trim(), "trImages", "이미지 폴더 선택 (학습)");
     };
     // When an images folder is picked/typed, auto-fill the annotations path with a
     // .json found inside it (prefer an egopath*.json).
@@ -3288,7 +3332,7 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
 
     $("lblBrowseBtn").onclick = () => {
       if ($("lblBrowser").style.display === "block") { $("lblBrowser").style.display = "none"; return; }
-      openBrowse($("lblFolder").value.trim() || "", "lblFolder", "lblBrowser");
+      openBrowseModal($("lblFolder").value.trim(), "lblFolder", "이미지 폴더 선택 (라벨링)");
     };
     function setRail(r) {
       lbl.rail = r;
