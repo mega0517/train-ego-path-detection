@@ -579,6 +579,7 @@
         <span style="flex:1"></span>
         <button id="swCropApply" class="sw-evbtn">폴더 전체에 적용</button>
         <button id="swCropReset" class="sw-evbtn">선택 해제</button>
+        <button id="swCropCancel" class="sw-evbtn">취소</button>
         <button id="swUncrop" class="sw-evbtn" title="orig_uncropped/의 원본으로 되돌립니다">크롭 되돌리기</button>
       </div>
       <div class="bar">
@@ -1717,6 +1718,7 @@
 
     // ----- 분기기 Switch 이미지 갤러리 -----
     let swLoaded = false, SW = [], swView = [], swEv = 0;
+    let swCacheBust = 0;       // 크롭 후 브라우저의 옛 프레임·썸네일 캐시를 무시하기 위한 값
     let swFrames = [], swMan = {}, swCenter = 0, swFi = 0, swTimer = null;
     const swState = { region: "", route: "", q: "", path: "on" };
     function swInit() {
@@ -1735,6 +1737,7 @@
         $("swCropBtn").onclick = () => swCropMode(!$("swLb").classList.contains("cropping"));
         $("swCropApply").onclick = swCropApply;
         $("swCropReset").onclick = () => { swCropSel = null; swCropDraw(); };
+        $("swCropCancel").onclick = () => swCropMode(false);   // 적용하지 않고 크롭 모드 종료
         $("swUncrop").onclick = swUncrop;
         const layer = $("swCropLayer");
         layer.onmousedown = (e) => {
@@ -1839,7 +1842,10 @@
       const frag = document.createDocumentFragment();
       swView.forEach((x, i) => {
         const c = document.createElement("div"); c.className = "sw-card" + (x.onpath === false ? " off" : "");
-        const thumb = x.center ? `/api/switch/ethumb/${encodeURIComponent(x.event)}/${encodeURIComponent(x.center)}` : "";
+        const thumb = x.center
+          ? `/api/switch/ethumb/${encodeURIComponent(x.event)}/${encodeURIComponent(x.center)}`
+            + (swCacheBust ? `?v=${swCacheBust}` : "")
+          : "";
         const evid = (x.event.split("__")[0] || "").toUpperCase();
         const pb = x.onpath === true ? `<div class="sw-pbadge on" title="${(x.reason||'').replace(/"/g,'')}">진로상 ${x.confidence!=null?Math.round(x.confidence*100)+'%':''}</div>`
                  : x.onpath === false ? `<div class="sw-pbadge off" title="${(x.reason||'').replace(/"/g,'')}">제외</div>` : "";
@@ -1903,7 +1909,6 @@
     // 한 프레임에서 고른 영역을 이벤트의 모든 프레임에 적용한다.
     let swCropSel = null;      // {left, top, right, bottom} 원본 픽셀 좌표
     let swCropDrag = null;
-    let swCacheBust = 0;       // 크롭 후 브라우저 캐시를 무시하기 위한 값
 
     function swImgGeom() {
       // object-fit:contain 이라 실제 그려진 영역은 레터박스 안쪽이다.
@@ -1961,6 +1966,7 @@
         swCacheBust = Date.now();
         swCropMode(false);
         swSetFrame(swFi);
+        swRender();            // 갤러리 카드의 대표 이미지도 새 크롭으로 갱신
       } catch (e) { alert("크롭 실패: " + e.message); }
     }
     async function swUncrop() {
@@ -1976,6 +1982,7 @@
       swCacheBust = Date.now();
       swCropMode(false);
       swSetFrame(swFi);
+      swRender();
     }
 
     function swFrameUrl(fn) {

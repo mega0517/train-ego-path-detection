@@ -819,6 +819,19 @@ def api_switch_events():
     return jsonify(items)
 
 
+def _drop_event_thumbs(event):
+    """이벤트의 캐시된 갤러리 썸네일을 지운다 (프레임 크기가 바뀐 뒤 재생성용)."""
+    if not os.path.isdir(_SWITCH_THUMBS):
+        return
+    prefix = os.path.basename(event) + "__"
+    for t in os.listdir(_SWITCH_THUMBS):
+        if t.startswith(prefix):
+            try:
+                os.remove(os.path.join(_SWITCH_THUMBS, t))
+            except OSError:
+                pass
+
+
 @app.route("/api/switch/crop_event", methods=["POST"])
 def api_switch_crop_event():
     """이벤트 폴더의 모든 프레임을 같은 영역으로 잘라낸다.
@@ -916,14 +929,7 @@ def api_switch_crop_event():
     with open(rec_path, "w", encoding="utf-8") as f:
         _json.dump(rec, f, indent=1)
 
-    # 캐시된 썸네일은 옛 크기라 지운다
-    if os.path.isdir(_SWITCH_THUMBS):
-        for t in os.listdir(_SWITCH_THUMBS):
-            if t.startswith(ev + "__"):
-                try:
-                    os.remove(os.path.join(_SWITCH_THUMBS, t))
-                except OSError:
-                    pass
+    _drop_event_thumbs(ev)  # 캐시된 썸네일은 옛 크기라 지운다
 
     return jsonify({"ok": True, "event": ev, "frames": done, "labels_shifted": moved,
                     "size": [right - left + 1, bottom - top + 1],
@@ -952,6 +958,7 @@ def api_switch_uncrop_event():
             os.remove(os.path.join(d, extra))
         except OSError:
             pass
+    _drop_event_thumbs(ev)
     return jsonify({"ok": True, "event": ev, "restored": n,
                     "note": "라벨 좌표는 크롭 기준이라 다시 만들어야 합니다."})
 
