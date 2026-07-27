@@ -835,13 +835,20 @@ def api_switch_delete_event():
     d = _event_dir(ev)
     if not ev or not d:
         return jsonify({"error": f"알 수 없는 이벤트: {ev}"}), 404
+    # 평가 샘플에 든 이벤트면 거기서도 빼고 같은 지역에서 하나 보충한다
+    # (라벨링 탭의 제거와 같은 규칙). refill=0으로 보충을 끌 수 있다.
+    in_sample = False
     try:
         with open(os.path.join(_SWITCH_EVENTS, "eval_sample.json"), encoding="utf-8") as f:
-            if any(m.get("event") == ev for m in _json.load(f)):
-                return jsonify({"error": "평가 샘플에 포함된 이벤트입니다. "
-                                         "라벨링 탭의 🗑(자동 보충)으로 먼저 빼주세요."}), 409
+            in_sample = any(m.get("event") == ev for m in _json.load(f))
     except (OSError, ValueError):
         pass
+    replacement = None
+    if in_sample:
+        ok, res = _eval_sample_drop(ev, refill=request.form.get("refill", "1") != "0")
+        if not ok:
+            return jsonify({"error": res["error"]}), res.get("status", 400)
+        replacement = res.get("replacement")
 
     trash = os.path.join(_SWITCH_EVENTS, "_trash")
     os.makedirs(trash, exist_ok=True)
@@ -872,7 +879,8 @@ def api_switch_delete_event():
     # 되살릴 때 필요한 원본 항목을 폴더와 함께 보관
     with open(os.path.join(dest, "_removed_entries.json"), "w", encoding="utf-8") as f:
         _json.dump(removed, f, ensure_ascii=False, indent=1)
-    return jsonify({"ok": True, "event": ev, "trash": dest})
+    return jsonify({"ok": True, "event": ev, "trash": dest,
+                    "eval_sample_dropped": in_sample, "replacement": replacement})
 
 
 def _event_dir(event):
@@ -2273,19 +2281,31 @@ def api_label_eval_sample_remove():
     eval_sample.json에서 빼서 eval_sample_removed.json에 보관한다(복구 가능).
     이벤트 폴더와 라벨 파일은 건드리지 않는다 — 평가 목록에서만 빠진다.
     """
-    import json as _json
     ev = os.path.basename((request.form.get("event") or "").strip())
     if not ev:
         return jsonify({"error": "event가 없습니다."}), 400
+    ok, res = _eval_sample_drop(ev, refill=request.form.get("refill", "1") != "0")
+    if not ok:
+        return jsonify({"error": res["error"]}), res.get("status", 400)
+    return jsonify({"ok": True, **res})
+
+
+def _eval_sample_drop(ev, refill=True):
+    """평가 샘플에서 이벤트 하나를 빼고, 원하면 같은 지역에서 하나 보충한다.
+
+    분기기 갤러리의 삭제와 라벨링 탭의 제거가 같은 규칙을 쓰도록 공유한다.
+    반환값은 (성공여부, {remaining, replacement} 또는 {error, status}).
+    """
+    import json as _json
     p = os.path.join(_SWITCH_EVENTS, "eval_sample.json")
     try:
         with open(p, encoding="utf-8") as f:
             sample = _json.load(f)
     except (OSError, ValueError):
-        return jsonify({"error": "eval_sample.json이 없습니다."}), 404
+        return False, {"error": "eval_sample.json이 없습니다.", "status": 404}
     keep = [m for m in sample if m.get("event") != ev]
     if len(keep) == len(sample):
-        return jsonify({"error": f"샘플에 없는 이벤트: {ev}"}), 404
+        return False, {"error": f"샘플에 없는 이벤트: {ev}", "status": 404}
     rp = os.path.join(_SWITCH_EVENTS, "eval_sample_removed.json")
     try:
         with open(rp, encoding="utf-8") as f:
@@ -2297,7 +2317,7 @@ def api_label_eval_sample_remove():
 
     # 자동 보충: 같은 지역(없으면 전체)에서 아직 안 쓰인 이벤트를 골라 채운다.
     replacement = None
-    if request.form.get("refill", "1") != "0":
+    if refill:
         replacement = _eval_sample_pick_replacement(
             keep, removed, dropped[0].get("region", "") if dropped else "")
         if replacement is not None:
@@ -2313,8 +2333,8 @@ def api_label_eval_sample_remove():
         with open(fp + ".tmp", "w", encoding="utf-8") as f:
             _json.dump(data, f, ensure_ascii=False, indent=1)
         os.replace(fp + ".tmp", fp)
-    return jsonify({"ok": True, "remaining": len(keep),
-                    "replacement": replacement and replacement["event"]})
+    return True, {"remaining": len(keep),
+                  "replacement": replacement and replacement["event"]}
 
 
 def _eval_sample_pick_replacement(sample, removed, region):

@@ -1798,12 +1798,18 @@
     async function swDeleteEvent(x) {
       if (!confirm(`'${x.event}'\n\n이 이벤트를 갤러리에서 제거할까요?\n`
           + `프레임 폴더는 switch_events/_trash/ 로 옮겨지고 목록(index.json)에서 빠집니다.\n`
+          + `평가 샘플에 포함된 이벤트라면 거기서도 빠지고 같은 지역에서 하나 보충됩니다.\n`
           + `완전 삭제가 아니므로 되돌릴 수 있습니다.`)) return;
       try {
         const fd = new FormData();
         fd.append("event", x.event);
         const d = await (await fetch("/api/switch/delete_event", { method: "POST", body: fd })).json();
         if (d.error) { alert(d.error); return; }
+        if (d.eval_sample_dropped) {
+          alert(`평가 샘플에서도 제거했습니다.`
+            + (d.replacement ? `\n보충된 새 이벤트: ${d.replacement}\n(자막 제거가 백그라운드로 진행됩니다)` : ""));
+          if (typeof lblEvalLoad === "function") lblEvalLoad();  // 라벨링 탭 셀렉터 갱신
+        }
         SW = SW.filter((e) => e.event !== x.event);
         swBuildChips();   // 칩 개수 갱신 (선택된 지역 필터는 유지)
         swRender();
