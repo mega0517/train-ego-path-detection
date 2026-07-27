@@ -903,8 +903,28 @@ def api_browse():
         for name in sorted(os.listdir(cur)):
             full = os.path.join(cur, name)
             if os.path.isdir(full):
-                dirs.append({"name": name, "path": full,
-                             "images": len(list_folder_images(full) or [])})
+                # Datasets often keep images one level further down (e.g.
+                # switch_events/<event>/*.jpg). Counting only direct children
+                # made those intermediate folders read as empty, so report the
+                # subfolder count too and probe a few of them for images.
+                sub_imgs = len(list_folder_images(full) or [])
+                sub_dirs, nested = 0, 0
+                try:
+                    with os.scandir(full) as it:
+                        for e in it:
+                            if not e.is_dir():
+                                continue
+                            sub_dirs += 1
+                            if sub_dirs <= 5:  # probe only, keep the listing fast
+                                nested += len(list_folder_images(e.path) or [])
+                except OSError:
+                    pass
+                dirs.append({"name": name, "path": full, "images": sub_imgs,
+                             "dirs": sub_dirs,
+                             # images seen in the probed subfolders; ">=" when
+                             # there are more subfolders than we looked at
+                             "nested_images": nested,
+                             "nested_partial": sub_dirs > 5})
             elif os.path.isfile(full):
                 files.append({"name": name, "path": full,
                               "size": os.path.getsize(full)})

@@ -1190,7 +1190,17 @@
         d.dirs.forEach((dir) => {
           const it = document.createElement("div");
           it.className = "br-item";
-          it.innerHTML = `<span>📁 ${dir.name}</span><span class="br-cnt">${dir.images} imgs</span>`;
+          // A folder with no images of its own may still hold them one level
+          // down (dataset/<event>/*.jpg); show that instead of a bare "0 imgs".
+          let cnt = `${dir.images} imgs`;
+          if (!dir.images && dir.dirs) {
+            cnt = dir.nested_images
+              ? `${dir.dirs}개 폴더 · 이미지 ${dir.nested_partial ? "≥" : ""}${dir.nested_images}`
+              : `${dir.dirs}개 폴더`;
+          } else if (dir.images && dir.dirs) {
+            cnt = `${dir.images} imgs · ${dir.dirs}개 폴더`;
+          }
+          it.innerHTML = `<span>📁 ${dir.name}</span><span class="br-cnt">${cnt}</span>`;
           it.onclick = () => openBrowse(dir.path, targetId, browserId);
           if (dir.images > 0) {
             const pick = document.createElement("span");
