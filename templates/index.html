@@ -524,6 +524,12 @@
       #pageSwitch .sw-pbadge.on{background:rgba(22,163,74,.92);color:#fff}
       #pageSwitch .sw-pbadge.off{background:rgba(100,116,139,.85);color:#fff}
       #pageSwitch .sw-card{position:relative}
+      #pageSwitch .sw-del{position:absolute;top:6px;right:6px;z-index:3;border:none;cursor:pointer;
+        width:26px;height:26px;border-radius:7px;background:rgba(198,40,40,.86);color:#fff;
+        font-size:13px;line-height:26px;padding:0;opacity:0;transition:.12s}
+      #pageSwitch .sw-card:hover .sw-del{opacity:1}
+      #pageSwitch .sw-del:hover{background:#b71c1c}
+      @media (hover:none){#pageSwitch .sw-del{opacity:.9}}
       #pageSwitch .sw-card.off{opacity:.62}
       #pageSwitch .sw-seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
       #pageSwitch .sw-seg button{background:#fff;border:none;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--text)}
@@ -1779,9 +1785,29 @@
           <img loading="lazy" src="${thumb}" alt="">
           <div class="sw-meta"><span class="r">${x.flag} ${x.region}</span><span class="s">▶ ${x.n_frames}</span></div>`;
         c.onclick = () => swOpenEv(i);
+        const del = document.createElement("button");
+        del.className = "sw-del";
+        del.textContent = "🗑";
+        del.title = "이 이벤트를 갤러리에서 제거 (_trash로 이동, 복구 가능)";
+        del.onclick = (e) => { e.stopPropagation(); swDeleteEvent(x); };
+        c.appendChild(del);
         frag.appendChild(c);
       });
       grid.appendChild(frag);
+    }
+    async function swDeleteEvent(x) {
+      if (!confirm(`'${x.event}'\n\n이 이벤트를 갤러리에서 제거할까요?\n`
+          + `프레임 폴더는 switch_events/_trash/ 로 옮겨지고 목록(index.json)에서 빠집니다.\n`
+          + `완전 삭제가 아니므로 되돌릴 수 있습니다.`)) return;
+      try {
+        const fd = new FormData();
+        fd.append("event", x.event);
+        const d = await (await fetch("/api/switch/delete_event", { method: "POST", body: fd })).json();
+        if (d.error) { alert(d.error); return; }
+        SW = SW.filter((e) => e.event !== x.event);
+        swBuildChips();   // 칩 개수 갱신 (선택된 지역 필터는 유지)
+        swRender();
+      } catch (e) { alert("제거 실패: " + e.message); }
     }
     function swOpenEv(i) {
       swPause();

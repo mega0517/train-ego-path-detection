@@ -819,6 +819,62 @@ def api_switch_events():
     return jsonify(items)
 
 
+@app.route("/api/switch/delete_event", methods=["POST"])
+def api_switch_delete_event():
+    """갤러리에서 이벤트 하나를 치운다 (완전 삭제가 아니라 _trash로 이동).
+
+    프레임 폴더를 switch_events/_trash/ 아래로 옮기고 index.json·onpath.json에서
+    항목을 뺀다. 되돌리려면 폴더를 원위치하고 백업된 항목을 되살리면 된다.
+    평가 샘플(eval_sample.json)에 들어 있는 이벤트는 지우지 않는다 — 평가셋이
+    조용히 깨지는 것을 막기 위해, 라벨링 탭의 제거(자동 보충 포함)를 쓰게 한다.
+    """
+    import json as _json
+    import shutil
+
+    ev = os.path.basename((request.form.get("event") or "").strip())
+    d = _event_dir(ev)
+    if not ev or not d:
+        return jsonify({"error": f"알 수 없는 이벤트: {ev}"}), 404
+    try:
+        with open(os.path.join(_SWITCH_EVENTS, "eval_sample.json"), encoding="utf-8") as f:
+            if any(m.get("event") == ev for m in _json.load(f)):
+                return jsonify({"error": "평가 샘플에 포함된 이벤트입니다. "
+                                         "라벨링 탭의 🗑(자동 보충)으로 먼저 빼주세요."}), 409
+    except (OSError, ValueError):
+        pass
+
+    trash = os.path.join(_SWITCH_EVENTS, "_trash")
+    os.makedirs(trash, exist_ok=True)
+    dest = os.path.join(trash, ev)
+    if os.path.exists(dest):
+        return jsonify({"error": f"휴지통에 같은 이름이 이미 있습니다: {ev}"}), 409
+    removed = {}
+    for fname, key in (("index.json", "list"), ("onpath.json", "dict")):
+        fp = os.path.join(_SWITCH_EVENTS, fname)
+        try:
+            with open(fp, encoding="utf-8") as f:
+                data = _json.load(f)
+        except (OSError, ValueError):
+            continue
+        if key == "list":
+            keep = [e for e in data if e.get("event") != ev]
+            removed[fname] = [e for e in data if e.get("event") == ev]
+        else:
+            keep = {k: v for k, v in data.items() if k != ev}
+            removed[fname] = {k: v for k, v in data.items() if k == ev}
+        with open(fp + ".tmp", "w", encoding="utf-8") as f:
+            _json.dump(keep, f, ensure_ascii=False, indent=1)
+        os.replace(fp + ".tmp", fp)
+    try:
+        shutil.move(d, dest)
+    except OSError as e:
+        return jsonify({"error": f"폴더 이동 실패: {e}"}), 500
+    # 되살릴 때 필요한 원본 항목을 폴더와 함께 보관
+    with open(os.path.join(dest, "_removed_entries.json"), "w", encoding="utf-8") as f:
+        _json.dump(removed, f, ensure_ascii=False, indent=1)
+    return jsonify({"ok": True, "event": ev, "trash": dest})
+
+
 def _event_dir(event):
     """Resolve an event name to its real dir inside switch_events, or None (blocks traversal)."""
     name = os.path.basename(event or "")
