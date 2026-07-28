@@ -361,6 +361,8 @@ def prepare_detector(model_path, device, crop_mode, crop_coords, smoothing=None)
     """Fetch a detector and reset its per-inference state (crop + temporal)."""
     det = get_detector(model_path, device, smoothing)
     det.crop_coords = build_crop_coords(crop_mode, crop_coords, det.config)
+    # 크롭을 생성 이후에 넣으므로, 크롭에 따라 달라지는 평활 지원 여부를 다시 묻는다
+    det.drop_unsupported_smoothing()
     det.reset_temporal()
     return det
 
@@ -4033,8 +4035,10 @@ def api_ghrepo_run_detect_compare():
     이미지 전용(비디오 비교는 지원하지 않음)."""
     model = (request.form.get("model") or "").strip()
     entry = next((e for e in discover_models() if e["name"] == model), None)
-    if entry is None or not entry["base_path"] or not entry["rnn_path"]:
-        return jsonify({"error": f"'{model}'에는 비교할 기존 모델·RNN 모델 쌍이 없습니다."}), 400
+    if entry is None:
+        return jsonify({"error": f"알 수 없는 모델: {model}"}), 400
+    # RNN 쌍이 없어도 거절하지 않는다: 나머지 두 칸(기존 모델, 평활)은
+    # 그대로 보여주고, 빠진 칸은 아래에서 이유를 붙여 돌려준다.
 
     server_path = (request.form.get("server_path") or "").strip()
     upload = request.files.get("file")
@@ -4082,6 +4086,8 @@ def api_ghrepo_run_detect_compare():
         "rnn": pil_to_data_uri(rnn_vis),
         "timing": timing,
     }
+    if rnn_vis is None:
+        payload["rnn_missing"] = f"'{model}'에는 RNN 버전이 없습니다"
 
     if smoothing == "none":
         smoothing = DEFAULT_COMPARE_SMOOTHING  # 세 번째 칸이 비지 않도록
@@ -4098,6 +4104,10 @@ def api_ghrepo_run_detect_compare():
             payload["smoothed"] = pil_to_data_uri(sm_vis)
             payload["smoothing"] = smoothing
             payload["warmup"] = used
+            if det_sm.smoothing_mode is None:
+                # 이 방식·크롭 조합은 평활을 지원하지 않아 원시 예측이 그려졌다
+                payload["smoothing_unsupported"] = (
+                    f"{det_sm.config['method']} 방식은 평활을 지원하지 않습니다")
         except Exception as e:  # noqa: BLE001 - a failed filter must not lose the pair
             payload["smoothing_error"] = str(e)
 

@@ -115,25 +115,7 @@ class Detector:
         self.smoothing_mode, self.smoothing_param = parse_smoothing(smoothing)
         if self.smoothing_mode == "rnn" and not self.temporal:
             raise ValueError("smoothing='rnn' requires a temporal (RNN) model")
-        if self.smoothing_mode in ("boxcar", "ema"):
-            # Smoothing averages raw predictions, which live in coordinates relative to
-            # the current crop window (see reproject_pred). Re-projecting them into a
-            # common frame is only implemented for the regression method, so with a
-            # moving (auto) crop the other methods would average mismatched frames.
-            unsupported = None
-            if self.config["method"] == "segmentation":
-                unsupported = "the segmentation method"
-            elif self.config["method"] != "regression" and isinstance(
-                self.crop_coords, Autocropper
-            ):
-                unsupported = f"method={self.config['method']!r} with crop_coords='auto'"
-            if unsupported is not None:
-                warnings.warn(
-                    f"smoothing={smoothing!r} is not supported for {unsupported},"
-                    + " falling back to no smoothing",
-                    stacklevel=2,
-                )
-                self.smoothing_mode, self.smoothing_param = None, None
+        self.drop_unsupported_smoothing()
         self.smoothing_buffer = (
             deque(maxlen=self.smoothing_param)
             if self.smoothing_mode == "boxcar"
@@ -246,6 +228,39 @@ class Detector:
                 rnn_hidden=self.config["seg_rnn_hidden"],
                 rnn_layers=self.config["rnn_layers"],
             )
+
+    def drop_unsupported_smoothing(self):
+        """Disables boxcar/ema smoothing when this method+crop cannot support it.
+
+        Smoothing averages raw predictions, which live in coordinates relative to
+        the current crop window (see reproject_pred). Re-projecting them into a
+        common frame is only implemented for the regression method, so with a
+        moving (auto) crop the other methods would average mismatched frames --
+        and their outputs do not even share a shape with the regression vector,
+        so averaging them raises rather than degrading quietly.
+
+        Called from __init__, but exposed because ``crop_coords`` may be assigned
+        after construction (callers that cache one detector across crop modes):
+        the answer depends on the crop, so it has to be re-asked when it changes.
+        """
+        if self.smoothing_mode not in ("boxcar", "ema"):
+            return
+        unsupported = None
+        if self.config["method"] == "segmentation":
+            unsupported = "the segmentation method"
+        elif self.config["method"] != "regression" and isinstance(
+            self.crop_coords, Autocropper
+        ):
+            unsupported = f"method={self.config['method']!r} with crop_coords='auto'"
+        if unsupported is not None:
+            warnings.warn(
+                f"smoothing={self.smoothing!r} is not supported for {unsupported},"
+                + " falling back to no smoothing",
+                stacklevel=2,
+            )
+            self.smoothing_mode, self.smoothing_param = None, None
+            self.smoothing_buffer = None
+            self.smoothing_state = None
 
     def reset_temporal(self):
         """Clears the stored ego-path history and the smoothing state

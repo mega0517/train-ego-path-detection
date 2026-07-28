@@ -682,6 +682,9 @@
       @media (max-width:700px){ #pageGhRepo .gh-dt-cmp{grid-template-columns:1fr}}
       #pageGhRepo .gh-run-log{background:#0d1117;color:#cdd6e0;font-family:monospace;font-size:11.5px;
         padding:10px;border-radius:6px;max-height:220px;overflow-y:auto;white-space:pre-wrap;margin-top:8px}
+      #pageGhRepo .gh-run-empty{display:flex;align-items:center;justify-content:center;
+        min-width:220px;min-height:160px;border:1px dashed #444;border-radius:6px;
+        padding:12px;text-align:center;font-size:12px}
       #pageGhRepo .gh-run-images{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
       #pageGhRepo .gh-run-images img{max-width:260px;border-radius:6px;border:1px solid var(--border)}
       #pageGhRepo .gh-run-single{margin-top:10px}
@@ -2439,7 +2442,7 @@
       panel.innerHTML = `<div class="gh-run">
         <div class="row">
           <label>모델 <select id="ghDtModel"><option value="">불러오는 중…</option></select></label>
-          <label><input type="checkbox" id="ghDtCompare"> 🆚 기존 모델과 RNN 모델 비교 (★ 표시된 모델만 가능)</label>
+          <label title="이미지 한 장은 늘 세 칸으로 비교합니다. 이 옵션은 폴더 연속 추론에만 적용됩니다."><input type="checkbox" id="ghDtCompare"> 🆚 폴더 추론에서도 기존 모델과 RNN 모델 비교 (★ 표시된 모델만 가능)</label>
         </div>
         <div class="row">
           <div class="gh-seg" id="ghDtSrcSeg">
@@ -2470,7 +2473,7 @@
               <option value="rnn">rnn (시간 모델 전용)</option>
             </select></label>
           <label title="평활 없음과 선택한 평활을 같은 입력에 각각 돌려 나란히 보여줍니다. 영상·연속 프레임에서만 차이가 납니다.">
-            <input type="checkbox" id="ghDtSmoothCmp"> 평활 비교 (나란히)</label>
+            <input type="checkbox" id="ghDtSmoothCmp"> 영상에서 평활 비교 (나란히)</label>
           <span id="ghDtCropCoords" style="display:none">
             <input type="number" class="coord" id="ghDtCropL" placeholder="left" value="0">
             <input type="number" class="coord" id="ghDtCropT" placeholder="top" value="0">
@@ -2678,11 +2681,12 @@
       if (useServer && !serverPath) { statusEl.textContent = "서버 파일을 선택하세요."; return; }
       if (!useServer && !fileInput.files.length) { statusEl.textContent = "입력 파일을 선택하세요."; return; }
       const compare = document.getElementById("ghDtCompare").checked;
-      if (compare && !(ghDtModelsInfo[model] || {}).rnn_path) {
-        statusEl.textContent = `'${model}'에는 RNN 버전이 없어 비교할 수 없습니다.`; return;
-      }
       if (useServer && ghDtServerIsFolder) { return ghRunDetectBatch(serverPath, model, compare); }
-      if (compare) { return ghRunDetectCompare(useServer ? serverPath : null, useServer ? null : fileInput.files[0], model); }
+      // 이미지 한 장이면 늘 세 칸(기존/RNN/평활)으로 비교한다 -- 셋 다 한 번에
+      // 보는 것이 이 화면의 목적이고, 빠진 칸은 이유를 적어 자리를 지킨다.
+      const inName = useServer ? serverPath : fileInput.files[0].name;
+      const isImage = /\.(jpe?g|png|bmp|tiff?)$/i.test(inName);
+      if (isImage) { return ghRunDetectCompare(useServer ? serverPath : null, useServer ? null : fileInput.files[0], model); }
 
       const fd = new FormData();
       fd.append("model", model);
@@ -2783,22 +2787,21 @@
         if (d.error) { statusEl.textContent = "오류: " + d.error; return; }
         const t = d.timing || {};
         statusEl.textContent = "✅ 완료";
-        let panels = `
-            <div><div class="mut">기존 모델 (${t.single_ms != null ? t.single_ms + "ms" : "-"})</div><img src="${d.single}"></div>
-            <div><div class="mut">RNN 모델 (${t.rnn_ms != null ? t.rnn_ms + "ms" : "-"})</div><img src="${d.rnn}"></div>`;
-        if (d.smoothed) {
-          // 예열 프레임 수를 함께 보여준다: 0이면 필터가 아직 비어 있어
-          // 기존 모델과 같은 그림이 나오는 게 정상이라는 뜻이다.
-          const warm = d.warmup > 0
-            ? `앞 ${d.warmup}프레임 예열`
-            : `예열 없음 — 기존 모델과 동일`;
-          panels += `
-            <div><div class="mut">${d.smoothing} (${t.smoothed_ms != null ? t.smoothed_ms + "ms" : "-"}, ${warm})</div><img src="${d.smoothed}"></div>`;
-        }
-        resultEl.innerHTML = `<div class="gh-run-images">${panels}</div>` +
-          (d.smoothing_error
-            ? `<div class="mut">평활 실패: ${d.smoothing_error.replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]))}</div>`
-            : "");
+        const esc = (x) => String(x).replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
+        // 세 칸은 언제나 자리를 지킨다: 그림이 없으면 왜 없는지가 그 자리에 들어간다.
+        const panel = (title, src, why) => `
+            <div><div class="mut">${esc(title)}</div>${src
+              ? `<img src="${src}">`
+              : `<div class="gh-run-empty mut">${esc(why || "결과 없음")}</div>`}</div>`;
+        const warm = d.smoothing_unsupported ? d.smoothing_unsupported
+          : d.warmup > 0 ? `앞 ${d.warmup}프레임 예열`
+          : `예열 없음 — 기존 모델과 동일`;
+        resultEl.innerHTML = `<div class="gh-run-images">
+${panel(`기존 모델 (${t.single_ms != null ? t.single_ms + "ms" : "-"})`, d.single)}
+${panel(`RNN 모델 (${t.rnn_ms != null ? t.rnn_ms + "ms" : "-"})`, d.rnn, d.rnn_missing)}
+${panel(`${d.smoothing || "평활"} (${t.smoothed_ms != null ? t.smoothed_ms + "ms" : "-"}, ${warm})`,
+        d.smoothed, d.smoothing_error)}
+          </div>`;
         if (serverPath) ghDtSaveRecentPath(serverPath);
       } catch (e) {
         btn.disabled = false;
