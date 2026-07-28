@@ -2437,7 +2437,6 @@
       panel.innerHTML = `<div class="gh-run">
         <div class="row">
           <label>모델 <select id="ghDtModel"><option value="">불러오는 중…</option></select></label>
-          <label title="이미지 한 장은 늘 세 칸으로 비교합니다. 이 옵션은 폴더 연속 추론에만 적용됩니다."><input type="checkbox" id="ghDtCompare"> 🆚 폴더 추론에서도 기존 모델과 RNN 모델 비교 (★ 표시된 모델만 가능)</label>
         </div>
         <div class="row">
           <div class="gh-seg" id="ghDtSrcSeg">
@@ -2673,8 +2672,7 @@
       if (!model) { statusEl.textContent = "모델을 선택하세요."; return; }
       if (useServer && !serverPath) { statusEl.textContent = "서버 파일을 선택하세요."; return; }
       if (!useServer && !fileInput.files.length) { statusEl.textContent = "입력 파일을 선택하세요."; return; }
-      const compare = document.getElementById("ghDtCompare").checked;
-      if (useServer && ghDtServerIsFolder) { return ghRunDetectBatch(serverPath, model, compare); }
+      if (useServer && ghDtServerIsFolder) { return ghRunDetectBatch(serverPath, model); }
       // 이미지 한 장이면 늘 세 칸(기존/RNN/평활)으로 비교한다 -- 셋 다 한 번에
       // 보는 것이 이 화면의 목적이고, 빠진 칸은 이유를 적어 자리를 지킨다.
       const inName = useServer ? serverPath : fileInput.files[0].name;
@@ -2773,7 +2771,7 @@ ${panel(`${d.smoothing || "평활"} (${t.smoothed_ms != null ? t.smoothed_ms + "
     }
 
     let ghDtBatchPoll = null;
-    async function ghRunDetectBatch(folder, model, compare) {
+    async function ghRunDetectBatch(folder, model) {
       const statusEl = document.getElementById("ghDtStatus");
       const resultEl = document.getElementById("ghDtResult");
       const btn = document.getElementById("ghDtRun");
@@ -2781,7 +2779,6 @@ ${panel(`${d.smoothing || "평활"} (${t.smoothed_ms != null ? t.smoothed_ms + "
       const fd = new FormData();
       fd.append("model", model);
       fd.append("folder", folder);
-      fd.append("compare", compare ? "true" : "false");
       fd.append("crop_mode", document.getElementById("ghDtCrop").value);
       fd.append("smoothing", document.getElementById("ghDtSmoothing").value);
       fd.append("crop_left", document.getElementById("ghDtCropL").value);
@@ -2851,9 +2848,17 @@ ${panel(`${d.smoothing || "평활"} (${t.smoothed_ms != null ? t.smoothed_ms + "
       if (pos) pos.textContent = `${ghDtBatchIdx + 1}/${total}`;
       if (res.existing_url) {
         const t = res.timing || {};
-        stage.innerHTML = `
-          <div><div class="mut">${res.name} · 기존 (${t.single_ms != null ? t.single_ms + "ms" : "-"})</div><img src="${res.existing_url}"></div>
-          <div><div class="mut">${res.name} · RNN (${t.rnn_ms != null ? t.rnn_ms + "ms" : "-"})</div><img src="${res.rnn_url}"></div>`;
+        const esc = (x) => String(x).replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
+        // 이미지·영상과 같은 규칙: 세 칸은 늘 자리를 지키고, 없으면 이유가 들어간다.
+        const cell = (label, src, why) => `
+          <div><div class="mut">${esc(label)}</div>${src
+            ? `<img src="${src}">`
+            : `<div class="gh-run-empty mut">${esc(why || "결과 없음")}</div>`}</div>`;
+        stage.innerHTML =
+          cell(`${res.name} · 기존 (${t.single_ms != null ? t.single_ms + "ms" : "-"})`, res.existing_url) +
+          cell(`${res.name} · RNN (${t.rnn_ms != null ? t.rnn_ms + "ms" : "-"})`, res.rnn_url, res.rnn_missing) +
+          cell(`${res.name} · ${res.smoothing || "평활"}${res.smoothing_unsupported ? " (미지원)" : ""}`,
+               res.smoothed_url, res.smoothing_unsupported);
       } else {
         stage.innerHTML = `<div><div class="mut">${res.name}</div><img src="${res.url}"></div>`;
       }

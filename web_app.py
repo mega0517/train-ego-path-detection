@@ -4248,16 +4248,15 @@ def api_ghrepo_run_detect_batch():
         return jsonify({"error": msg}), code
 
     model = (request.form.get("model") or "").strip()
-    compare = request.form.get("compare") == "true"
-    if compare:
-        entry = next((e for e in discover_models() if e["name"] == model), None)
-        if entry is None or not entry["base_path"] or not entry["rnn_path"]:
-            return _reject(f"'{model}'에는 비교할 기존 모델·RNN 모델 쌍이 없습니다.", 400)
-        model_path = entry["base_path"]  # only used for the "found" check below
-    else:
-        model_path, _ = model_paths_for(model)
-    if not model_path:
+    # 폴더도 이미지 한 장·영상과 같이 늘 세 칸으로 본다. RNN이 없는 모델도
+    # 거절하지 않고, 만들 수 없는 칸만 비워서 돌려준다.
+    if not any(e["name"] == model for e in discover_models()):
         return _reject(f"알 수 없는 모델: {model}", 400)
+    smoothing = (request.form.get("smoothing") or "none").strip().lower()
+    if not re.fullmatch(r"none|rnn|boxcar\d+|ema\d*\.?\d+", smoothing):
+        return _reject(f"잘못된 smoothing: {smoothing}", 400)
+    if smoothing in ("none", "rnn"):
+        smoothing = DEFAULT_COMPARE_SMOOTHING
 
     folder = (request.form.get("folder") or "").strip()
     files = list_folder_images(folder)
@@ -4291,10 +4290,11 @@ def api_ghrepo_run_detect_batch():
 
     def worker():
         try:
-            if compare:
-                det_single, det_rnn = detectors_for_request(model, device, crop_mode, crop_coords)
-            else:
-                det = prepare_detector(model_path, device, crop_mode, crop_coords)
+            det_single, det_rnn = detectors_for_request(model, device, crop_mode, crop_coords)
+            base_path, rnn_path = model_paths_for(model)
+            sm_target = base_path if base_path and os.path.exists(base_path) else rnn_path
+            # 폴더 전체를 한 시퀀스로 보고 상태를 이어간다 (여기서 한 번만 준비).
+            det_sm = prepare_detector(sm_target, device, crop_mode, crop_coords, smoothing)
         except Exception as e:
             with _gh_batch_lock:
                 _gh_detect_batch["log"] = f"모델 로딩 실패: {e}"
@@ -4311,30 +4311,35 @@ def api_ghrepo_run_detect_batch():
                 img = Image.open(in_path)
                 if img.mode != "RGB":
                     img = img.convert("RGB")
-                if compare:
-                    single_vis, rnn_vis, timing = run_both(img, det_single, det_rnn)
-                    single_name, rnn_name = f"{stem}_existing{fext}", f"{stem}_rnn{fext}"
-                    single_vis.save(os.path.join(result_dir, single_name))
+                single_vis, rnn_vis, timing = run_both(img, det_single, det_rnn)
+                single_name = f"{stem}_existing{fext}"
+                single_vis.save(os.path.join(result_dir, single_name))
+                rnn_name = None
+                if rnn_vis is not None:
+                    rnn_name = f"{stem}_rnn{fext}"
                     rnn_vis.save(os.path.join(result_dir, rnn_name))
-                else:
-                    crop = det.get_crop_coords() if show_crop else None
-                    res = det.detect(img)
-                    outname = f"{stem}_out{fext}"
-                    draw_egopath(img, res, crop_coords=crop).save(os.path.join(result_dir, outname))
+                sm_name = f"{stem}_smoothed{fext}"
+                draw_egopath(img, det_sm.detect(img),
+                             crop_coords=det_sm.get_crop_coords() if show_crop else None
+                             ).save(os.path.join(result_dir, sm_name))
             except Exception as e:  # noqa: BLE001 - one bad image shouldn't abort the batch
                 ok, err = False, str(e)
             with _gh_batch_lock:
                 _gh_detect_batch["done"] += 1
-                if ok and compare:
+                if ok:
+                    url = f"/api/ghrepo/detect_output/{token}"
                     _gh_detect_batch["results"].append({
                         "name": fn,
-                        "existing_url": f"/api/ghrepo/detect_output/{token}/{single_name}",
-                        "rnn_url": f"/api/ghrepo/detect_output/{token}/{rnn_name}",
+                        "existing_url": f"{url}/{single_name}",
+                        "rnn_url": f"{url}/{rnn_name}" if rnn_name else None,
+                        "rnn_missing": None if rnn_name else f"'{model}'에는 RNN 버전이 없습니다",
+                        "smoothed_url": f"{url}/{sm_name}",
+                        "smoothing": smoothing,
+                        "smoothing_unsupported": (
+                            None if det_sm.smoothing_mode is not None
+                            else f"{det_sm.config['method']} 방식은 평활을 지원하지 않습니다"),
                         "timing": timing,
                     })
-                elif ok:
-                    _gh_detect_batch["results"].append(
-                        {"name": fn, "url": f"/api/ghrepo/detect_output/{token}/{outname}"})
                 else:
                     _gh_detect_batch["log"] += f"[{fn}] 실패: {err}\n"
         with _gh_batch_lock:
