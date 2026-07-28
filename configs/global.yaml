@@ -8,7 +8,7 @@ scheduler: one_cycle  # scheduler name (only "one_cycle" is supported, "null" fo
 train_prop: 0.8  # proportion of the dataset to use for training
 val_prop: 0.1  # proportion of the dataset to use for validation
 test_prop: 0.1  # proportion of the dataset to use for testing
-workers: 16  # number of workers for the dataloader (24-core host)
+workers: 8  # 2 runs share this 24-core host; 16 each would oversubscribe
 gpu_preprocess: false  # move JPEG decode/crop/resize/jitter/flip to the GPU (temporal training); dataloader workers only read raw bytes
 seed: 42  # random seed for reproducibility
 val_iterations: 1  # number of epochs of the validation set to validate the model
@@ -33,6 +33,17 @@ seq_jitter: 0.05  # crop-box jitter factor for pseudo-sequence synthesis
 seq_occlusion_prob: 0.0  # probability of masking the bottom band of the last frame's input (target kept) — turnout-occlusion augmentation; set via train.py --seq-occlusion
 seq_occlusion_min: 0.1  # minimum occluded fraction of the image height (from the bottom)
 seq_occlusion_max: 0.4  # maximum occluded fraction of the image height (from the bottom)
+
+# prior-path channel configuration — only used by --prior-channel runs.
+# The mixture below is what the 4th channel is trained to mean; see
+# PathsDataset.generate_prior for why each regime is there.
+prior_empty_prob: 0.15  # fraction of samples given an empty prior (sequence start / lost track)
+prior_wrong_prob: 0.15  # fraction given a badly displaced prior (committed to the wrong branch)
+prior_wrong_shift: [0.06, 0.25]  # displacement range of a wrong prior, as a fraction of width
+prior_jitter: 0.02  # std-dev of the shift applied to a correct prior (~one frame of ego-motion)
+prior_occlusion_prob: 0.35  # probability of blanking the bottom band of the RGB (switch-passage geometry)
+prior_occlusion_min: 0.1  # minimum blanked fraction of image height, from the bottom
+prior_occlusion_max: 0.45  # maximum blanked fraction
 
 # paths configuration
 images_path: "/data3/bhkim/datasets/OSDaR23_rgb_center"  # path to the images directory

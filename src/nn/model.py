@@ -32,10 +32,14 @@ class ClassificationNet(nn.Module):
         super(ClassificationNet, self).__init__()
         if backbone.startswith("efficientnet"):
             self.backbone = EfficientNetBackbone(
-                version=backbone[13:], pretrained=pretrained
+                version=backbone[13:], pretrained=pretrained,
+                in_channels=input_shape[0],
             )
         elif backbone.startswith("resnet"):
-            self.backbone = ResNetBackbone(version=backbone[6:], pretrained=pretrained)
+            self.backbone = ResNetBackbone(
+                version=backbone[6:], pretrained=pretrained,
+                in_channels=input_shape[0],
+            )
         else:
             raise NotImplementedError
         self.pool = nn.Conv2d(
@@ -84,10 +88,14 @@ class RegressionNet(nn.Module):
         super(RegressionNet, self).__init__()
         if backbone.startswith("efficientnet"):
             self.backbone = EfficientNetBackbone(
-                version=backbone[13:], pretrained=pretrained
+                version=backbone[13:], pretrained=pretrained,
+                in_channels=input_shape[0],
             )
         elif backbone.startswith("resnet"):
-            self.backbone = ResNetBackbone(version=backbone[6:], pretrained=pretrained)
+            self.backbone = ResNetBackbone(
+                version=backbone[6:], pretrained=pretrained,
+                in_channels=input_shape[0],
+            )
         else:
             raise NotImplementedError
         self.pool = nn.Conv2d(
@@ -141,10 +149,14 @@ class MultiPathRegressionNet(nn.Module):
         super(MultiPathRegressionNet, self).__init__()
         if backbone.startswith("efficientnet"):
             self.backbone = EfficientNetBackbone(
-                version=backbone[13:], pretrained=pretrained
+                version=backbone[13:], pretrained=pretrained,
+                in_channels=input_shape[0],
             )
         elif backbone.startswith("resnet"):
-            self.backbone = ResNetBackbone(version=backbone[6:], pretrained=pretrained)
+            self.backbone = ResNetBackbone(
+                version=backbone[6:], pretrained=pretrained,
+                in_channels=input_shape[0],
+            )
         else:
             raise NotImplementedError
         self.n_hypotheses = n_hypotheses
@@ -213,6 +225,7 @@ class SegmentationNet(nn.Module):
         backbone,
         decoder_channels,
         pretrained=False,
+        in_channels=3,
     ):
         """Initializes the train ego-path detection model for the segmentation method.
 
@@ -220,6 +233,7 @@ class SegmentationNet(nn.Module):
             backbone (str): Backbone to use in the model (e.g. "resnet18", "efficientnet-b3", etc.).
             decoder_channels (tuple): Number of output channels of each decoder block.
             pretrained (bool, optional): Whether to use pretrained weights for the backbone. Defaults to False.
+            in_channels (int, optional): Number of input channels (4 adds a prior-path channel). Defaults to 3.
         """
         super(SegmentationNet, self).__init__()
         if backbone.startswith("efficientnet"):
@@ -227,12 +241,14 @@ class SegmentationNet(nn.Module):
                 version=backbone[13:],
                 out_levels=(1, 3, 4, 6, 8),
                 pretrained=pretrained,
+                in_channels=in_channels,
             )
         elif backbone.startswith("resnet"):
             self.encoder = ResNetBackbone(
                 version=backbone[6:],
                 out_levels=(1, 2, 3, 4, 5),
                 pretrained=pretrained,
+                in_channels=in_channels,
             )
         else:
             raise NotImplementedError

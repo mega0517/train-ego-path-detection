@@ -23,6 +23,7 @@ class PathsDataset(Dataset):
         method,
         img_aug=False,
         to_tensor=False,
+        prior=False,
     ):
         """Initializes the dataset for ego-path detection.
 
@@ -34,6 +35,8 @@ class PathsDataset(Dataset):
             method (str): Method to use for ground truth generation ("classification", "regression" or "segmentation").
             img_aug (bool, optional): Whether to use stochastic image adjustment (brightness, contrast, saturation and hue). Defaults to False.
             to_tensor (bool, optional): Whether to return a ready to infer tensor (scaled and possibly resized). Defaults to False.
+            prior (bool, optional): Whether to append a 4th input channel holding the
+                previously accepted path (see generate_prior). Defaults to False.
         """
         os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
         self.imgs_path = imgs_path
@@ -42,6 +45,7 @@ class PathsDataset(Dataset):
         self.imgs = [sorted(self.annotations.keys())[i] for i in indices]
         self.config = config
         self.method = method
+        self.prior = prior
 
         self.img_aug = (
             transforms.ColorJitter(
@@ -75,10 +79,13 @@ class PathsDataset(Dataset):
         rails_mask = self.generate_rails_mask(img.size, annotation)
         img, rails_mask = self.random_crop(img, rails_mask)
         img, rails_mask = self.random_flip_lr(img, rails_mask)
+        prior = self.generate_prior(rails_mask) if self.prior else None
         if self.to_tensor:
             img = self.to_tensor(img)
         if self.img_aug:
             img = self.img_aug(img)
+        if prior is not None:
+            img = self.attach_prior(img, prior)
         if self.method == "regression":
             path_gt, ylim_gt = self.generate_target_regression(rails_mask)
             if self.to_tensor:
@@ -190,6 +197,60 @@ class PathsDataset(Dataset):
             img = ImageOps.mirror(img)
             rails_mask = np.fliplr(rails_mask)
         return img, rails_mask
+
+    def generate_prior(self, rails_mask):
+        """Renders the "previously accepted path" channel for one sample.
+
+        The channel carries the answer the model committed to on the frame before.
+        Training it on the *correct* previous path alone would teach the network to
+        copy it, which is useless at inference where the prior is the model's own
+        output and is sometimes wrong -- the branch it must be able to abandon once
+        the tongue rail comes back into view. So the prior is corrupted on purpose,
+        in three regimes whose mixture defines what the network learns:
+
+        - empty (prior_empty_prob): the start of a sequence, or a lost track. The
+          model must still work from the image alone.
+        - displaced (prior_wrong_prob): a large lateral shift, standing in for
+          having committed to the wrong branch. The target stays correct, so the
+          model is taught to override a prior the image contradicts.
+        - otherwise: the correct path shifted by prior_jitter, which is roughly
+          what one frame of ego-motion does to it.
+
+        Independently, the bottom band of the RGB is sometimes blanked (see
+        attach_prior): that is the switch-passage geometry, where the evidence that
+        decides the branch has left the field of view and the prior is the only
+        thing left to answer from.
+        """
+        w = rails_mask.shape[1]
+        if np.random.rand() < self.config.get("prior_empty_prob", 0.15):
+            return Image.new("L", (w, rails_mask.shape[0]), 0)
+        if not rails_mask.any():
+            return Image.new("L", (w, rails_mask.shape[0]), 0)
+        if np.random.rand() < self.config.get("prior_wrong_prob", 0.15):
+            lo, hi = self.config.get("prior_wrong_shift", (0.06, 0.25))
+            shift = np.random.uniform(lo, hi) * w * np.random.choice([-1.0, 1.0])
+        else:
+            shift = np.random.normal(0.0, self.config.get("prior_jitter", 0.02)) * w
+        mask = self.generate_target_segmentation(rails_mask)
+        return mask.transform(
+            mask.size, Image.AFFINE, (1, 0, -shift, 0, 1, 0), resample=Image.NEAREST
+        )
+
+    def attach_prior(self, img, prior):
+        """Concatenates the prior as a 4th channel, optionally blanking the RGB bottom."""
+        prior = prior.resize(self.config["input_shape"][1:][::-1], Image.NEAREST)
+        prior = torch.from_numpy(np.array(prior, dtype=np.float32) / 255.0)[None]
+        if not torch.is_tensor(img):  # to_tensor=False: keep the pair inspectable
+            return img, prior
+        occ = self.config.get("prior_occlusion_prob", 0.0)
+        if occ and np.random.rand() < occ:
+            frac = np.random.uniform(
+                self.config.get("prior_occlusion_min", 0.1),
+                self.config.get("prior_occlusion_max", 0.45),
+            )
+            img = img.clone()
+            img[:, int((1 - frac) * img.shape[1]):, :] = 0
+        return torch.cat([img, prior.to(img.dtype)], dim=0)
 
     def generate_target_regression(self, rails_mask):
         unvalid_rows = np.where(np.sum(rails_mask, axis=1) != 2)[0]

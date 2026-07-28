@@ -131,6 +131,16 @@ def parse_arguments():
         action="store_true",
         help="Offload JPEG decode/crop/resize/jitter/flip to the GPU (temporal training only). Dataloader workers only read raw file bytes, freeing CPU cores.",
     )
+    parser.add_argument(
+        "--prior-channel",
+        action="store_true",
+        help="Append a 4th input channel holding the previously accepted ego-path, so"
+             " the branch the model committed to survives the frames where the switch"
+             " geometry that decided it has left the field of view. The channel enters"
+             " at the first conv with zero-initialised weights, so the run starts as"
+             " the per-frame baseline. See PathsDataset.generate_prior for how the"
+             " prior is corrupted during training.",
+    )
     parser.add_argument("--epochs", type=int, default=None,
                         help="Override the number of epochs from the method config.")
     parser.add_argument("--learning-rate", type=float, default=None,
@@ -223,6 +233,15 @@ def main(args):
         config["temporal"] = True
         config["base_model"] = args.base_model
         config["freeze_base"] = not args.finetune_base
+
+    if args.prior_channel:
+        if args.temporal:
+            raise ValueError(
+                "--prior-channel and --temporal are alternative ways to carry state;"
+                " the prior channel replaces the RNN refiner rather than stacking on it"
+            )
+        config["input_shape"] = [4, *config["input_shape"][1:]]
+        config["prior_channel"] = True
 
     if args.n_hypotheses > 1:
         if method != "regression" or args.temporal:
@@ -323,6 +342,7 @@ def main(args):
     seq_kwargs = (
         {"seq_len": config["seq_len"], "seq_jitter": config["seq_jitter"]}
         if args.temporal
+        else {"prior": True} if args.prior_channel
         else {}
     )
     if real_seq:
@@ -467,6 +487,7 @@ def main(args):
                 backbone=config["backbone"],
                 decoder_channels=tuple(config["decoder_channels"]),
                 pretrained=config["pretrained"],
+                in_channels=config["input_shape"][0],
             ).to(device)
     else:
         raise ValueError

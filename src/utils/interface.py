@@ -7,7 +7,7 @@ from collections import deque
 import numpy as np
 import torch
 import yaml
-from PIL import Image
+from PIL import Image, ImageDraw
 from torchvision.transforms import v2 as transforms
 
 from ..nn.model import (
@@ -122,6 +122,12 @@ class Detector:
             else None
         )
         self.smoothing_state = None  # (running output, its crop coords) of the ema
+        # A 4-channel model expects the path it accepted on the previous frame as
+        # its 4th input. It is kept in ORIGINAL image coordinates and re-rendered
+        # into whatever crop the next frame uses, so a moving autocrop window does
+        # not silently shift the prior relative to the image it describes.
+        self.prior_channel = self.config["input_shape"][0] == 4
+        self.prior_state = None
 
         if self.runtime == "pytorch":
             self.model = self.init_model_pytorch()
@@ -270,6 +276,7 @@ class Detector:
         if self.smoothing_buffer is not None:
             self.smoothing_buffer.clear()
         self.smoothing_state = None
+        self.prior_state = None
 
     # alias, for callers that do not care about the temporal/smoothing distinction
     reset = reset_temporal
@@ -382,9 +389,36 @@ class Detector:
             f.write(engine.serialize())
         os.remove("temp.onnx")
 
-    def infer_model_pytorch(self, img):
+    def render_prior(self, crop_coords, original_shape):
+        """The previous frame's accepted path, as a mask in the current crop.
+
+        Returns None before the first accepted path, which the model reads as the
+        empty prior it was trained on at sequence starts.
+        """
+        if self.prior_state is None:
+            return None
+        if isinstance(self.prior_state, Image.Image):
+            mask = self.prior_state
+        else:
+            left, right = self.prior_state
+            mask = Image.new("L", original_shape, 0)
+            pts = [tuple(p) for p in left] + [tuple(p) for p in reversed(right)]
+            if len(pts) >= 3:
+                ImageDraw.Draw(mask).polygon(pts, fill=255)
+        if crop_coords is not None:
+            xleft, ytop, xright, ybottom = crop_coords
+            mask = mask.crop((xleft, ytop, xright + 1, ybottom + 1))
+        mask = mask.resize(self.config["input_shape"][1:][::-1], Image.NEAREST)
+        t = torch.from_numpy(np.array(mask, dtype=np.float32) / 255.0)
+        return t[None, None].to(self.device)
+
+    def infer_model_pytorch(self, img, prior=None):
         tensor = to_scaled_tensor(img).unsqueeze(0).to(self.device)
         tensor = transforms.Resize(self.config["input_shape"][1:][::-1])(tensor)
+        if self.prior_channel:
+            if prior is None:
+                prior = torch.zeros_like(tensor[:, :1])
+            tensor = torch.cat([tensor, prior.to(tensor.dtype)], dim=1)
         with torch.inference_mode():
             pred = self.model(tensor)
         return pred.cpu().numpy()
@@ -480,7 +514,9 @@ class Detector:
 
         if self.runtime == "pytorch":
             if not self.temporal:
-                pred = self.infer_model_pytorch(img)
+                pred = self.infer_model_pytorch(
+                    img, self.render_prior(crop_coords, original_shape)
+                )
             elif self.smoothing_mode in (None, "rnn"):
                 pred = self.infer_temporal_pytorch(img)
             else:  # "none", "boxcar" and "ema" operate on the unrefined base output
@@ -496,6 +532,8 @@ class Detector:
         pred = self.apply_smoothing(pred, crop_coords)
 
         res = self.pred_to_result(pred, crop_coords, original_shape)
+        if self.prior_channel:
+            self.prior_state = res
 
         if isinstance(self.crop_coords, Autocropper):
             self.crop_coords.update(original_shape, res)
