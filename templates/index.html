@@ -951,6 +951,16 @@
           <button class="btn" id="lblEvalDelBtn" style="background:#c62828;" title="현재 이벤트를 평가 샘플에서 제거">🗑</button>
         </div>
         <div class="info" id="lblEvalInfo">체크리스트 30개를 ◀ ▶로 차례로 이동하며 라벨링합니다.</div>
+
+        <hr style="border:0;border-top:1px solid #2a3038;margin:10px 0">
+        <div class="row" style="gap:6px;align-items:center">
+          <button class="btn" id="lblRevLoad" style="background:#00695c;">🔍 검수 큐 불러오기</button>
+          <button class="btn" id="lblRevPrev" style="background:#455a64;" title="이전 검수 프레임">◀</button>
+          <select id="lblRevSel" style="flex:1;min-width:0;"><option value="">— 검수 큐 —</option></select>
+          <button class="btn" id="lblRevNext" style="background:#455a64;" title="다음 검수 프레임">▶</button>
+          <button class="btn" id="lblRevDone" style="background:#2e7d32;" title="이 프레임 검수 완료">✓ 확인</button>
+        </div>
+        <div class="info" id="lblRevInfo">모델들이 서로 다르게 답한 프레임만 모은 큐입니다. 자동 라벨이 맞으면 ✓만, 틀리면 점을 고친 뒤 저장하고 ✓를 누르세요.</div>
       </div>
 
       <div class="card span2">
@@ -3756,6 +3766,77 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       const v = $("lblEvalSel").value;
       lblEvalGo(v === "" ? 0 : parseInt(v, 10) + 1);
     };
+    // ----- 검수 큐: 모델 불일치가 큰 프레임만 프레임 단위로 순회 -----
+    let REVIEW_Q = [];
+    function lblRevRender(keep) {
+      const sel = $("lblRevSel");
+      sel.innerHTML = '<option value="">— 검수 큐 —</option>';
+      REVIEW_Q.forEach((it, i) => {
+        const op = document.createElement("option");
+        op.value = String(i);
+        op.textContent = `${it.done ? "✅" : "⬜"} ${String(i + 1).padStart(3, "0")}. `
+                       + `${it.event.slice(0, 26)} / ${it.frame}`;
+        sel.appendChild(op);
+      });
+      if (keep !== undefined && keep !== "") sel.value = String(keep);
+      const done = REVIEW_Q.filter((x) => x.done).length;
+      $("lblRevInfo").textContent =
+        `검수 ${done}/${REVIEW_Q.length} 완료` + (REVIEW_Q.length ? "" : " — 목록이 비어 있습니다.");
+    }
+    $("lblRevLoad").onclick = async () => {
+      try {
+        const d = await (await fetch("/api/label/review_queue")).json();
+        if (d.error) { $("lblRevInfo").textContent = "오류: " + d.error; return; }
+        REVIEW_Q = d.items;
+        lblRevRender();
+      } catch (e) { $("lblRevInfo").textContent = "불러오기 실패: " + e.message; }
+    };
+    async function lblRevGo(i) {
+      if (!REVIEW_Q.length) return;
+      i = Math.max(0, Math.min(REVIEW_Q.length - 1, i));
+      const it = REVIEW_Q[i];
+      $("lblRevSel").value = String(i);
+      // 폴더가 바뀐 경우에만 목록을 다시 읽는다 (같은 이벤트 안에서는 즉시 이동)
+      if ($("lblFolder").value.trim() !== it.folder) {
+        $("lblFolder").value = it.folder;
+        $("lblAnnots").value = it.folder + "/egopath_labels_auto.json";
+        await loadLabelList();
+      }
+      const k = (lbl.images || []).findIndex((x) => x.name === it.frame);
+      if (k >= 0) loadLabelImage(k);
+      const done = REVIEW_Q.filter((x) => x.done).length;
+      $("lblRevInfo").textContent =
+        `${i + 1}/${REVIEW_Q.length} · ${it.frame} · ${it.reason || "검수 대상"} · 완료 ${done}`;
+    }
+    $("lblRevSel").onchange = () => {
+      const v = $("lblRevSel").value;
+      if (v !== "") lblRevGo(parseInt(v, 10));
+    };
+    $("lblRevPrev").onclick = () => {
+      const v = $("lblRevSel").value;
+      lblRevGo(v === "" ? 0 : parseInt(v, 10) - 1);
+    };
+    $("lblRevNext").onclick = () => {
+      const v = $("lblRevSel").value;
+      lblRevGo(v === "" ? 0 : parseInt(v, 10) + 1);
+    };
+    $("lblRevDone").onclick = async () => {
+      const v = $("lblRevSel").value;
+      if (v === "") return;
+      const i = parseInt(v, 10), it = REVIEW_Q[i];
+      const fd = new FormData();
+      fd.append("key", `${it.event}/${it.frame}`);
+      fd.append("state", it.done ? "false" : "true");
+      try {
+        const d = await (await fetch("/api/label/review_mark", { method: "POST", body: fd })).json();
+        if (d.ok) {
+          it.done = !it.done;
+          lblRevRender(String(i));
+          if (it.done) lblRevGo(i + 1);   // 확인하면 바로 다음 프레임으로
+        }
+      } catch (_) { /* 표시 실패는 검수 자체를 막지 않는다 */ }
+    };
+
     $("lblEvalDelBtn").onclick = async () => {
       const v = $("lblEvalSel").value;
       if (v === "" || !EVAL_SAMPLE.length) { alert("먼저 이벤트를 선택하세요."); return; }

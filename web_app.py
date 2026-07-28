@@ -17,6 +17,7 @@ import argparse
 import base64
 import hmac
 import io
+import json
 import os
 import re
 import subprocess
@@ -2607,6 +2608,73 @@ def api_label_eval_sample():
                       "region": m.get("region", ""), "center": m.get("center_frame", ""),
                       "n_frames": m.get("n_frames", 0), "labeled": labeled})
     return jsonify(items)
+
+
+_REVIEW_DONE = os.path.join(BASE_PATH, "output", "review_done.json")
+
+
+def _review_done_set():
+    try:
+        with open(_REVIEW_DONE, encoding="utf-8") as f:
+            return set(json.load(f))
+    except (OSError, ValueError):
+        return set()
+
+
+@app.route("/api/label/review_queue")
+def api_label_review_queue():
+    """검수가 필요한 프레임만 한 줄로 세운 큐.
+
+    자동 라벨은 대부분 맞고 틀린 곳만 사람이 봐야 하는데, 그 프레임들이 이벤트
+    52개에 흩어져 있어 폴더를 오가며 찾는 것 자체가 검수보다 오래 걸린다. 큐는
+    프레임 단위로 바로 이동할 수 있게 이벤트 경계를 없앤다. 순서는 모델 불일치가
+    큰 것부터가 아니라 촬영 순서대로 둔다 — 같은 분기기를 지나는 이웃 프레임을
+    연달아 보아야 시간축으로 판단할 수 있고, 그것이 이 프레임들을 사람이 봐야
+    하는 이유이기 때문이다.
+    """
+    path = os.path.join(BASE_PATH, "output", "review_list_ensemble.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            rows = json.load(f)
+    except (OSError, ValueError):
+        return jsonify({"error": "review_list_ensemble.json이 없습니다."}), 404
+    done = _review_done_set()
+    items = []
+    for r in rows:
+        if r.get("unreliable"):
+            continue  # 이벤트 통째로 제외 후보라 프레임 검수 대상이 아니다
+        folder = os.path.join(_SWITCH_EVENTS, r["event"])
+        reasons = {}
+        try:
+            with open(os.path.join(folder, "review_frames.json"), encoding="utf-8") as f:
+                reasons = {x["frame"]: x.get("reason", "") for x in json.load(f)["review"]}
+        except (OSError, ValueError, KeyError):
+            pass
+        for frame in r.get("review", []):
+            key = f"{r['event']}/{frame}"
+            items.append({"event": r["event"], "folder": folder, "frame": frame,
+                          "reason": reasons.get(frame, ""), "done": key in done})
+    return jsonify({"ok": True, "items": items,
+                    "done": sum(1 for i in items if i["done"]), "total": len(items)})
+
+
+@app.route("/api/label/review_mark", methods=["POST"])
+def api_label_review_mark():
+    """검수 완료 표시를 켜고 끈다."""
+    key = (request.form.get("key") or "").strip()
+    if not key or "/" not in key:
+        return jsonify({"error": "잘못된 key"}), 400
+    done = _review_done_set()
+    if request.form.get("state") == "false":
+        done.discard(key)
+    else:
+        done.add(key)
+    os.makedirs(os.path.dirname(_REVIEW_DONE), exist_ok=True)
+    tmp = _REVIEW_DONE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(sorted(done), f)
+    os.replace(tmp, _REVIEW_DONE)
+    return jsonify({"ok": True, "done": len(done)})
 
 
 @app.route("/api/label/eval_sample_remove", methods=["POST"])
