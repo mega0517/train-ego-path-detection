@@ -97,8 +97,10 @@ def parse_arguments():
         "--init-from",
         type=str,
         default=None,
-        help="Warm-start from a trained single-path model in egopath/weights (e.g."
-        " chromatic-laughter-5); its final layer is replicated per hypothesis.",
+        help="Warm-start from a trained model in egopath/weights (e.g."
+        " chromatic-laughter-5). With --n-hypotheses its final layer is replicated per"
+        " hypothesis; otherwise the weights are loaded as-is, with the first conv"
+        " widened by zero-filled channels when the run adds input channels.",
     )
     parser.add_argument("--wta-epsilon", type=float, default=0.05,
                         help="Weight kept on the losing hypotheses (0 = pure WTA, which"
@@ -183,6 +185,38 @@ def load_base_weights(base_net, ckpt_path, device):
     state = {k.replace("_orig_mod.", "").replace("module.", ""): v
              for k, v in state.items()}
     base_net.load_state_dict(state)
+
+
+def load_warm_start(model, ckpt_path):
+    """Loads trained weights into ``model``, widening the first conv if needed.
+
+    A run that adds input channels still wants everything the per-frame model
+    learned; only its first conv disagrees in shape. The saved RGB filters are
+    copied into the wider one and the added channels start at zero, so the
+    warm-started model reproduces the checkpoint exactly on its first forward
+    pass and has to earn any use of the new channel (see backbone.inflate_first_conv).
+    """
+    state = torch.load(ckpt_path, map_location="cpu")
+    own = model.state_dict()
+    loaded = 0
+    for k, v in state.items():
+        if k not in own:
+            continue
+        target = own[k]
+        if target.shape == v.shape:
+            own[k] = v
+        elif (target.dim() == 4 and v.dim() == 4
+              and target.shape[0] == v.shape[0]
+              and target.shape[2:] == v.shape[2:]
+              and target.shape[1] > v.shape[1]):
+            widened = torch.zeros_like(target)
+            widened[:, : v.shape[1]] = v
+            own[k] = widened
+        else:
+            continue
+        loaded += 1
+    model.load_state_dict(own)
+    return loaded
 
 
 def main(args):
@@ -449,7 +483,14 @@ def main(args):
                 pool_channels=config["pool_channels"],
                 fc_hidden_size=config["fc_hidden_size"],
                 pretrained=config["pretrained"],
-            ).to(device)
+            )
+            if args.init_from:
+                copied = load_warm_start(
+                    model,
+                    os.path.join(base_path, "egopath", "weights", args.init_from, "best.pt"),
+                )
+                logger.info(f"\n[warm-start] loaded {copied} tensors from {args.init_from}")
+            model = model.to(device)
     elif method == "classification":
         if args.temporal:
             model = ClassificationNetRNN(

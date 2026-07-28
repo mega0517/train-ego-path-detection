@@ -71,7 +71,7 @@ def episodes(flags):
     return out
 
 
-def evaluate(weights_dir, tau):
+def evaluate(weights_dir, tau, only=None):
     det = Detector(model_path=weights_dir, crop_coords=None,
                    runtime="pytorch", device="cuda:0")
     ious, wrong, per_event = [], [], []
@@ -80,6 +80,8 @@ def evaluate(weights_dir, tau):
         if not labels:
             continue
         folder = os.path.dirname(lbl_path)
+        if only is not None and os.path.basename(folder) not in only:
+            continue
         det.crop_coords = Autocropper(det.config)
         det.drop_unsupported_smoothing()
         det.reset_temporal()          # each event is an independent sequence
@@ -128,14 +130,21 @@ def main():
     ap.add_argument("--tau", type=float, default=0.05,
                     help="far-field offset (fraction of width) above which a frame counts"
                          " as wrong-branch. Default 0.05.")
+    ap.add_argument("--events", default=None,
+                    help="JSON list of event names to restrict the evaluation to."
+                         " Use the held-out list when the models were fine-tuned on"
+                         " these events, or the comparison scores its own training data.")
     ap.add_argument("--out", default=None, help="write the full result as JSON here")
     args = ap.parse_args()
 
+    only = set(json.load(open(args.events))) if args.events else None
+    if only:
+        print(f"restricted to {len(only)} events\n")
     results = {}
     for spec in args.models:
         d, _, label = spec.partition(":")
         label = label or os.path.basename(d.rstrip("/"))
-        results[label] = evaluate(d, args.tau)
+        results[label] = evaluate(d, args.tau, only)
         r = results[label]
         print(f"{label}: {r['events']} events / {r['frames']} frames")
 
