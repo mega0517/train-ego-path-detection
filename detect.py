@@ -63,11 +63,14 @@ def parse_arguments():
         " 'ema<A>' (exponential moving average, e.g. 'ema0.5'),"
         " 'rnn' (the model's own RNN refinement, temporal models only),"
         " or 'none' (raw per-frame prediction, the default)."
-        " Smoothing measurably helps only without cropping (--crop none: boxcar5 improves"
-        " GT IoU 0.5929 -> 0.6110 on the labeled OSDaR23 sequences), but not with the"
-        " default --crop auto, where the Autocropper's own running average already"
-        " stabilizes the prediction and the added lag costs IoU (0.5698 -> 0.5627)."
-        " Consider 'boxcar5' when running with --crop none.",
+        " On the turnout evaluation set (30 events, --crop auto) 'ema0.5' cuts"
+        " frame-to-frame jitter by 22%% for 0.015 IoU, which is the best trade of the"
+        " filters measured -- and a bigger stability gain than the trained RNN refiner"
+        " achieves. Heavier averaging keeps buying stability but pays for it: 'boxcar5'"
+        " reaches 28%% at 0.042 IoU. Without cropping (--crop none) the lag matters less"
+        " and 'boxcar5' improves GT IoU outright (0.5929 -> 0.6110 on labeled OSDaR23"
+        " sequences), because there the Autocropper's own running average is absent."
+        " Start from 'ema0.5' when the output feeds anything that dislikes jitter.",
     )
     parser.add_argument(
         "--device",

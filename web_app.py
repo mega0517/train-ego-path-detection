@@ -18,6 +18,7 @@ import base64
 import hmac
 import io
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -3804,6 +3805,14 @@ def api_ghrepo_run_detect():
         except ValueError:
             return jsonify({"error": "잘못된 end"}), 400
     show_crop = request.form.get("show_crop") == "true"
+    # detect.py의 시간 평활: none / boxcar<K> / ema<A> / rnn
+    smoothing = (request.form.get("smoothing") or "none").strip().lower()
+    if not re.fullmatch(r"none|rnn|boxcar\d+|ema\d*\.?\d+", smoothing):
+        return jsonify({"error": f"잘못된 smoothing: {smoothing}"}), 400
+    # 평활은 연속 프레임에서만 의미가 있으므로(정지 영상은 첫 프레임=항등),
+    # 비교는 영상 입력에서만 켠다.
+    compare_smoothing = (request.form.get("compare_smoothing") == "true"
+                         and smoothing != "none")
     out_dir_req = (request.form.get("output") or "").strip()
     gpu_uuid = (request.form.get("gpu_uuid") or "").strip()  # "" => CPU
 
@@ -3830,7 +3839,8 @@ def api_ghrepo_run_detect():
         os.makedirs(result_dir, exist_ok=True)
 
         cmd = [sys.executable, "detect.py", model, input_path,
-               "--output", result_dir, "--crop", crop_arg, "--start", str(start)]
+               "--output", result_dir, "--crop", crop_arg, "--start", str(start),
+               "--smoothing", smoothing]
         if end is not None:
             cmd += ["--end", str(end)]
         if show_crop:
@@ -3846,19 +3856,40 @@ def api_ghrepo_run_detect():
 
         is_video = ext in _GH_DETECT_VIDEO_EXT
         timeout = 600 if is_video else 120
-        try:
-            r = subprocess.run(cmd, cwd=tmpdir, env=env, capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            shutil.rmtree(result_dir, ignore_errors=True)
-            return jsonify({"error": f"detect.py 실행이 {timeout}초를 넘어 중단했습니다."}), 504
+        def run_once(sm, tag):
+            """detect.py 1회 실행 -> (출력 경로, 로그, 명령). 실패 시 경로는 None."""
+            c = list(cmd)
+            c[c.index("--smoothing") + 1] = sm
+            outdir = result_dir if tag is None else os.path.join(result_dir, tag)
+            os.makedirs(outdir, exist_ok=True)
+            c[c.index("--output") + 1] = outdir
+            try:
+                rr = subprocess.run(c, cwd=tmpdir, env=env, capture_output=True,
+                                    text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return None, f"detect.py 실행이 {timeout}초를 넘어 중단했습니다.", c
+            name = f"{os.path.splitext(input_basename)[0]}_out{ext}"
+            path = os.path.join(outdir, name)
+            lg = ((rr.stdout or "") + (rr.stderr or ""))[-8000:]
+            return (path if rr.returncode == 0 and os.path.exists(path) else None), lg, c
 
-        log = ((r.stdout or "") + (r.stderr or ""))[-8000:]
+        if compare_smoothing:
+            # 평활 없음과 선택한 평활을 같은 입력에 각각 돌려 나란히 보여준다
+            base_path_out, log_a, cmd_a = run_once("none", "none")
+            out_path, log_b, cmd = run_once(smoothing, smoothing)
+            log = f"[평활 없음]\n{log_a}\n\n[{smoothing}]\n{log_b}"[-8000:]
+            if out_path is None or base_path_out is None:
+                shutil.rmtree(result_dir, ignore_errors=True)
+                return jsonify({"ok": False, "returncode": 1, "log": log,
+                                 "cmd": " ".join(str(c) for c in cmd)}), 200
+        else:
+            out_path, log, cmd = run_once(smoothing, None)
+            base_path_out = None
+            if out_path is None:
+                shutil.rmtree(result_dir, ignore_errors=True)
+                return jsonify({"ok": False, "returncode": 1, "log": log,
+                                 "cmd": " ".join(str(c) for c in cmd)}), 200
         outname = f"{os.path.splitext(input_basename)[0]}_out{ext}"
-        out_path = os.path.join(result_dir, outname)
-        if r.returncode != 0 or not os.path.exists(out_path):
-            shutil.rmtree(result_dir, ignore_errors=True)
-            return jsonify({"ok": False, "returncode": r.returncode, "log": log,
-                             "cmd": " ".join(str(c) for c in cmd)}), 200
 
         if out_dir_req:
             try:
@@ -3867,17 +3898,26 @@ def api_ghrepo_run_detect():
             except OSError as e:
                 log += f"\n(--output 사본 저장 실패: {e})"
 
-        if is_video:
-            result = {"kind": "video", "url": f"/api/ghrepo/detect_output/{token}/{outname}"}
-        else:
+        def as_result(path, sub):
+            if is_video:
+                rel = f"{sub}/{outname}" if sub else outname
+                return {"kind": "video", "url": f"/api/ghrepo/detect_output/{token}/{rel}"}
             import base64
-            with open(out_path, "rb") as f:
+            with open(path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode("ascii")
-            result = {"kind": "image", "data_url": f"data:image/jpeg;base64,{b64}"}
-            shutil.rmtree(result_dir, ignore_errors=True)  # inlined already; no need to keep it
+            return {"kind": "image", "data_url": f"data:image/jpeg;base64,{b64}"}
 
-        return jsonify({"ok": True, "returncode": 0, "log": log,
-                         "cmd": " ".join(str(c) for c in cmd), "result": result})
+        payload = {"ok": True, "returncode": 0, "log": log,
+                   "cmd": " ".join(str(c) for c in cmd)}
+        if compare_smoothing:
+            payload["result"] = as_result(base_path_out, "none")
+            payload["result_b"] = as_result(out_path, smoothing)
+            payload["labels"] = ["평활 없음", smoothing]
+        else:
+            payload["result"] = as_result(out_path, None)
+        if not is_video:
+            shutil.rmtree(result_dir, ignore_errors=True)  # 이미 인라인했으므로 보관 불필요
+        return jsonify(payload)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -3886,8 +3926,11 @@ def api_ghrepo_run_detect():
 
 @app.route("/api/ghrepo/detect_output/<token>/<path:filename>")
 def api_ghrepo_detect_output(token, filename):
-    import re
-    if not re.fullmatch(r"[0-9a-f]{12}", token) or "/" in filename or ".." in filename:
+    # 평활 비교는 result_dir 아래 평활 이름별 하위 폴더에 결과를 두므로
+    # "<평활>/<파일>" 형태의 한 단계 중첩까지 허용한다.
+    parts = filename.split("/")
+    if (not re.fullmatch(r"[0-9a-f]{12}", token) or len(parts) > 2
+            or not all(re.fullmatch(r"[A-Za-z0-9._-]+", q) and q != ".." for q in parts)):
         return ("bad request", 400)
     path = os.path.join(_GH_DETECT_OUTPUT_DIR, token, filename)
     if not os.path.isfile(path):
