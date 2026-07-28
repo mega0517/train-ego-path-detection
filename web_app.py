@@ -401,6 +401,9 @@ def run_both(img, det_single, det_rnn):
 
 
 SMOOTHING_WARMUP_FRAMES = 8
+# 비교를 요청했는데 필터를 안 고른 경우 쓸 값. 평가에서 안정성 대비 정확도
+# 손실이 가장 좋았던 설정이라, "비교"가 빈 화면으로 끝나지 않게 이걸 쓴다.
+DEFAULT_COMPARE_SMOOTHING = "ema0.5"
 
 
 def run_smoothed_on_sequence(det, img, server_path, warmup=SMOOTHING_WARMUP_FRAMES):
@@ -3892,8 +3895,9 @@ def api_ghrepo_run_detect():
         return jsonify({"error": f"잘못된 smoothing: {smoothing}"}), 400
     # 평활은 연속 프레임에서만 의미가 있으므로(정지 영상은 첫 프레임=항등),
     # 비교는 영상 입력에서만 켠다.
-    compare_smoothing = (request.form.get("compare_smoothing") == "true"
-                         and smoothing != "none")
+    compare_smoothing = request.form.get("compare_smoothing") == "true"
+    if compare_smoothing and smoothing == "none":
+        smoothing = DEFAULT_COMPARE_SMOOTHING  # 비교인데 필터가 없으면 볼 게 없다
     out_dir_req = (request.form.get("output") or "").strip()
     gpu_uuid = (request.form.get("gpu_uuid") or "").strip()  # "" => CPU
 
@@ -4079,7 +4083,9 @@ def api_ghrepo_run_detect_compare():
         "timing": timing,
     }
 
-    if smoothing not in ("none", "rnn"):
+    if smoothing == "none":
+        smoothing = DEFAULT_COMPARE_SMOOTHING  # 세 번째 칸이 비지 않도록
+    if smoothing != "rnn":
         base_path, rnn_path = model_paths_for(model)
         target = base_path if base_path and os.path.exists(base_path) else rnn_path
         try:
