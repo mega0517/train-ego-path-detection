@@ -675,11 +675,6 @@
       #pageGhRepo .gh-run button.stop{background:#c62828}
       #pageGhRepo .gh-run button:disabled{opacity:.5;cursor:default}
       #pageGhRepo .gh-run-status{font-size:13px;color:var(--muted)}
-      #pageGhRepo .gh-dt-cmp{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-      #pageGhRepo .gh-dt-cmp figure{margin:0;min-width:0}
-      #pageGhRepo .gh-dt-cmp figcaption{font-size:12px;color:#9aa;margin-bottom:4px}
-      #pageGhRepo .gh-dt-cmp img,#pageGhRepo .gh-dt-cmp video{width:100%;height:auto}
-      @media (max-width:700px){ #pageGhRepo .gh-dt-cmp{grid-template-columns:1fr}}
       #pageGhRepo .gh-run-log{background:#0d1117;color:#cdd6e0;font-family:monospace;font-size:11.5px;
         padding:10px;border-radius:6px;max-height:220px;overflow-y:auto;white-space:pre-wrap;margin-top:8px}
       #pageGhRepo .gh-run-empty{display:flex;align-items:center;justify-content:center;
@@ -2472,8 +2467,6 @@
               <option value="boxcar5">boxcar5</option>
               <option value="rnn">rnn (시간 모델 전용)</option>
             </select></label>
-          <label title="평활 없음과 선택한 평활을 같은 입력에 각각 돌려 나란히 보여줍니다. 영상·연속 프레임에서만 차이가 납니다.">
-            <input type="checkbox" id="ghDtSmoothCmp"> 영상에서 평활 비교 (나란히)</label>
           <span id="ghDtCropCoords" style="display:none">
             <input type="number" class="coord" id="ghDtCropL" placeholder="left" value="0">
             <input type="number" class="coord" id="ghDtCropT" placeholder="top" value="0">
@@ -2694,7 +2687,6 @@
       else fd.append("file", fileInput.files[0]);
       fd.append("crop_mode", document.getElementById("ghDtCrop").value);
       fd.append("smoothing", document.getElementById("ghDtSmoothing").value);
-      fd.append("compare_smoothing", document.getElementById("ghDtSmoothCmp").checked ? "true" : "false");
       fd.append("crop_left", document.getElementById("ghDtCropL").value);
       fd.append("crop_top", document.getElementById("ghDtCropT").value);
       fd.append("crop_right", document.getElementById("ghDtCropR").value);
@@ -2720,44 +2712,15 @@
           return;
         }
         statusEl.textContent = "✅ 완료 — $ " + d.cmd;
-        const asMedia = (r) => r.kind === "video"
-          ? `<video src="${r.url}" controls></video>`
-          : `<img src="${r.data_url}">`;
-        let media;
-        if (d.result_b) {
-          const lab = d.labels || ["A", "B"];
-          media = `<div class="gh-dt-cmp">
-            <figure><figcaption>${lab[0]}</figcaption>${asMedia(d.result)}</figure>
-            <figure><figcaption>${lab[1]}</figcaption>${asMedia(d.result_b)}</figure>
-          </div>`;
-        } else {
-          media = asMedia(d.result);
-        }
+        const media = d.result.kind === "video"
+          ? `<video src="${d.result.url}" controls></video>`
+          : `<img src="${d.result.data_url}">`;
         resultEl.innerHTML = `${media}<div class="gh-run-log">${(d.log || "").replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]))}</div>`;
-        if (d.result_b) ghDtSyncPlayback(resultEl);
         if (useServer) ghDtSaveRecentPath(serverPath);
       } catch (e) {
         btn.disabled = false;
         statusEl.textContent = "실행 실패: " + e.message;
       }
-    }
-
-    function ghDtSyncPlayback(root) {
-      // 두 영상을 한 컨트롤처럼 다룬다: 어느 쪽을 조작해도 다른 쪽이 따라온다
-      const vs = Array.from(root.querySelectorAll(".gh-dt-cmp video"));
-      if (vs.length !== 2) return;
-      let syncing = false;
-      const mirror = (src, fn) => {
-        if (syncing) return;
-        syncing = true;
-        vs.filter(v => v !== src).forEach(fn);
-        syncing = false;
-      };
-      vs.forEach(v => {
-        v.addEventListener("play", () => mirror(v, o => { o.currentTime = v.currentTime; o.play(); }));
-        v.addEventListener("pause", () => mirror(v, o => o.pause()));
-        v.addEventListener("seeked", () => mirror(v, o => { o.currentTime = v.currentTime; }));
-      });
     }
 
     async function ghRunDetectCompare(serverPath, file, model) {

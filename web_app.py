@@ -60,7 +60,7 @@ _pin_to_one_full_gpu()
 import torch  # noqa: E402 - must follow the CUDA_VISIBLE_DEVICES pin above
 import yaml
 from flask import Flask, g, jsonify, render_template, request, Response, send_file, stream_with_context
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 # Register HEIC/HEIF support (iPhone photos) with PIL when available.
 try:
@@ -444,6 +444,110 @@ def run_smoothed_on_sequence(det, img, server_path, warmup=SMOOTHING_WARMUP_FRAM
                     pass  # a damaged neighbour just shortens the warm-up
     crop = det.get_crop_coords()
     return draw_egopath(img, det.detect(img), crop_coords=crop), used
+
+
+THREE_PANEL_WIDTH = 640
+_LABEL_FONT = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+_LABEL_BAR = 30
+
+
+def _label_font(size=18):
+    try:
+        return ImageFont.truetype(_LABEL_FONT, size)
+    except OSError:  # no CJK font installed -- labels degrade, video still works
+        return ImageFont.load_default()
+
+
+def _stack_panels(panels, font):
+    """Lay labelled panels left-to-right into one RGB numpy frame (BGR for cv2).
+
+    Panels go into one frame rather than three players because comparing jitter
+    means comparing the *same* frame: separate videos drift apart the moment one
+    of them buffers.
+    """
+    import numpy as np
+
+    w = max(p[0].width for p in panels)
+    h = max(p[0].height for p in panels)
+    sheet = Image.new("RGB", (w * len(panels), h + _LABEL_BAR), (16, 18, 22))
+    draw = ImageDraw.Draw(sheet)
+    for i, (img, label) in enumerate(panels):
+        x = i * w
+        sheet.paste(img, (x, _LABEL_BAR))
+        draw.text((x + 8, 6), label, fill=(230, 235, 240), font=font)
+    return np.array(sheet)[:, :, ::-1]  # RGB -> BGR
+
+
+def compose_three_panel_video(
+    video_path, out_path, model, device, crop_mode, crop_coords, smoothing,
+    start=0.0, end=None, panel_width=THREE_PANEL_WIDTH,
+):
+    """Render 기존 모델 / RNN 모델 / <smoothing> into one side-by-side video.
+
+    Runs the three detectors in process rather than calling detect.py three
+    times: each pass would otherwise repeat python/torch/CUDA startup and model
+    loading, and -- more importantly -- decode the whole video again. The
+    detectors are the same cached ones the rest of the app uses, so the drawn
+    result matches what detect.py produces for each configuration.
+
+    Returns {"frames", "skipped_rnn"}.
+    """
+    import cv2
+
+    det_single, det_rnn = detectors_for_request(model, device, crop_mode, crop_coords)
+    base_path, rnn_path = model_paths_for(model)
+    sm_target = base_path if base_path and os.path.exists(base_path) else rnn_path
+    det_sm = prepare_detector(sm_target, device, crop_mode, crop_coords, smoothing)
+    sm_label = smoothing if det_sm.smoothing_mode is not None else f"{smoothing} (미지원)"
+
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    cap.release()
+    first, last = int(start * fps), (int(end * fps) if end else None)
+
+    font = _label_font()
+    writer = None
+    crop_scaled = False
+    frames = 0
+    try:
+        for idx, img, _total in decode_video_frames(video_path):
+            if idx < first or (last is not None and idx > last):
+                continue
+            proc, scale = downscale_to_width(img, panel_width)
+            if scale != 1.0 and crop_mode == "manual" and not crop_scaled:
+                for det in (det_single, det_rnn, det_sm):
+                    if det is not None and isinstance(det.crop_coords, tuple):
+                        det.crop_coords = tuple(round(c * scale) for c in det.crop_coords)
+                crop_scaled = True
+
+            panels = []
+            for det, label in ((det_single, "기존 모델"), (det_rnn, "RNN 모델"),
+                               (det_sm, sm_label)):
+                if det is None:
+                    blank = Image.new("RGB", proc.size, (26, 28, 34))
+                    ImageDraw.Draw(blank).text(
+                        (10, proc.height // 2), "이 모델에는 RNN 버전이 없습니다",
+                        fill=(150, 155, 165), font=font)
+                    panels.append((blank, label))
+                    continue
+                crop = det.get_crop_coords()
+                panels.append((draw_egopath(proc, det.detect(proc), crop_coords=crop), label))
+
+            sheet = _stack_panels(panels, font)
+            if writer is None:
+                h, w = sheet.shape[:2]
+                writer = cv2.VideoWriter(
+                    out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+                if not writer.isOpened():
+                    raise ValueError(f"영상 인코더를 열 수 없습니다: {out_path}")
+            writer.write(sheet)
+            frames += 1
+    finally:
+        if writer is not None:
+            writer.release()
+    if frames == 0:
+        raise ValueError("지정한 구간에 프레임이 없습니다.")
+    return {"frames": frames, "skipped_rnn": det_rnn is None}
 
 
 def detectors_for_request(model_name, device, crop_mode, crop_coords):
@@ -3877,6 +3981,7 @@ def api_ghrepo_run_detect():
             return jsonify({"error": "크롭 좌표는 정수여야 합니다."}), 400
         crop_arg = ",".join(str(c) for c in coords)
     else:
+        coords = None
         crop_arg = crop_mode
 
     try:
@@ -3897,9 +4002,6 @@ def api_ghrepo_run_detect():
         return jsonify({"error": f"잘못된 smoothing: {smoothing}"}), 400
     # 평활은 연속 프레임에서만 의미가 있으므로(정지 영상은 첫 프레임=항등),
     # 비교는 영상 입력에서만 켠다.
-    compare_smoothing = request.form.get("compare_smoothing") == "true"
-    if compare_smoothing and smoothing == "none":
-        smoothing = DEFAULT_COMPARE_SMOOTHING  # 비교인데 필터가 없으면 볼 게 없다
     out_dir_req = (request.form.get("output") or "").strip()
     gpu_uuid = (request.form.get("gpu_uuid") or "").strip()  # "" => CPU
 
@@ -3943,40 +4045,52 @@ def api_ghrepo_run_detect():
 
         is_video = ext in _GH_DETECT_VIDEO_EXT
         timeout = 600 if is_video else 120
-        def run_once(sm, tag):
-            """detect.py 1회 실행 -> (출력 경로, 로그, 명령). 실패 시 경로는 None."""
-            c = list(cmd)
-            c[c.index("--smoothing") + 1] = sm
-            outdir = result_dir if tag is None else os.path.join(result_dir, tag)
-            os.makedirs(outdir, exist_ok=True)
-            c[c.index("--output") + 1] = outdir
-            try:
-                rr = subprocess.run(c, cwd=tmpdir, env=env, capture_output=True,
-                                    text=True, timeout=timeout)
-            except subprocess.TimeoutExpired:
-                return None, f"detect.py 실행이 {timeout}초를 넘어 중단했습니다.", c
-            name = f"{os.path.splitext(input_basename)[0]}_out{ext}"
-            path = os.path.join(outdir, name)
-            lg = ((rr.stdout or "") + (rr.stderr or ""))[-8000:]
-            return (path if rr.returncode == 0 and os.path.exists(path) else None), lg, c
 
-        if compare_smoothing:
-            # 평활 없음과 선택한 평활을 같은 입력에 각각 돌려 나란히 보여준다
-            base_path_out, log_a, cmd_a = run_once("none", "none")
-            out_path, log_b, cmd = run_once(smoothing, smoothing)
-            log = f"[평활 없음]\n{log_a}\n\n[{smoothing}]\n{log_b}"[-8000:]
-            if out_path is None or base_path_out is None:
+        if is_video:
+            # 영상도 이미지와 같이 세 칸으로 본다. detect.py를 세 번 돌리면
+            # 영상을 세 번 디코딩하고 모델 로딩도 세 번 반복하므로, 폴더 연속
+            # 추론과 같은 이유로 인메모리 detector를 써서 한 번에 합성한다.
+            outname = f"{os.path.splitext(input_basename)[0]}_out.mp4"
+            out_path = os.path.join(result_dir, outname)
+            dev = "cuda:0" if (gpu_uuid and "cuda:0" in available_devices()) else "cpu"
+            sm = smoothing if smoothing != "none" else DEFAULT_COMPARE_SMOOTHING
+            try:
+                info = compose_three_panel_video(
+                    input_path, out_path, model, dev, crop_mode, coords, sm,
+                    start=start, end=end)
+            except Exception as e:  # noqa: BLE001 - surface the failure to the UI
                 shutil.rmtree(result_dir, ignore_errors=True)
-                return jsonify({"ok": False, "returncode": 1, "log": log,
-                                 "cmd": " ".join(str(c) for c in cmd)}), 200
-        else:
-            out_path, log, cmd = run_once(smoothing, None)
-            base_path_out = None
-            if out_path is None:
-                shutil.rmtree(result_dir, ignore_errors=True)
-                return jsonify({"ok": False, "returncode": 1, "log": log,
-                                 "cmd": " ".join(str(c) for c in cmd)}), 200
+                return jsonify({"error": str(e)}), 500
+            note = f"{info['frames']}프레임 합성 (기존 모델 / RNN 모델 / {sm}), 장비 {dev}"
+            if info["skipped_rnn"]:
+                note += f"\n'{model}'에는 RNN 버전이 없어 가운데 칸은 비어 있습니다."
+            if out_dir_req:
+                try:
+                    os.makedirs(out_dir_req, exist_ok=True)
+                    shutil.copy(out_path, os.path.join(out_dir_req, outname))
+                except OSError as e:
+                    note += f"\n(--output 사본 저장 실패: {e})"
+            return jsonify({
+                "ok": True, "returncode": 0, "log": note,
+                "cmd": f"(in-process 3칸 합성) {model} {input_path} --crop {crop_arg} --smoothing {sm}",
+                "result": {"kind": "video",
+                            "url": f"/api/ghrepo/detect_output/{token}/{outname}"},
+            })
+
+        try:
+            r = subprocess.run(cmd, cwd=tmpdir, env=env, capture_output=True,
+                               text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(result_dir, ignore_errors=True)
+            return jsonify({"error": f"detect.py 실행이 {timeout}초를 넘어 중단했습니다."}), 504
+
+        log = ((r.stdout or "") + (r.stderr or ""))[-8000:]
         outname = f"{os.path.splitext(input_basename)[0]}_out{ext}"
+        out_path = os.path.join(result_dir, outname)
+        if r.returncode != 0 or not os.path.exists(out_path):
+            shutil.rmtree(result_dir, ignore_errors=True)
+            return jsonify({"ok": False, "returncode": r.returncode, "log": log,
+                             "cmd": " ".join(str(c) for c in cmd)}), 200
 
         if out_dir_req:
             try:
@@ -3985,26 +4099,15 @@ def api_ghrepo_run_detect():
             except OSError as e:
                 log += f"\n(--output 사본 저장 실패: {e})"
 
-        def as_result(path, sub):
-            if is_video:
-                rel = f"{sub}/{outname}" if sub else outname
-                return {"kind": "video", "url": f"/api/ghrepo/detect_output/{token}/{rel}"}
-            import base64
-            with open(path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("ascii")
-            return {"kind": "image", "data_url": f"data:image/jpeg;base64,{b64}"}
-
-        payload = {"ok": True, "returncode": 0, "log": log,
-                   "cmd": " ".join(str(c) for c in cmd)}
-        if compare_smoothing:
-            payload["result"] = as_result(base_path_out, "none")
-            payload["result_b"] = as_result(out_path, smoothing)
-            payload["labels"] = ["평활 없음", smoothing]
-        else:
-            payload["result"] = as_result(out_path, None)
-        if not is_video:
-            shutil.rmtree(result_dir, ignore_errors=True)  # 이미 인라인했으므로 보관 불필요
-        return jsonify(payload)
+        import base64
+        with open(out_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        shutil.rmtree(result_dir, ignore_errors=True)  # 이미 인라인했으므로 보관 불필요
+        return jsonify({
+            "ok": True, "returncode": 0, "log": log,
+            "cmd": " ".join(str(c) for c in cmd),
+            "result": {"kind": "image", "data_url": f"data:image/jpeg;base64,{b64}"},
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -4013,11 +4116,7 @@ def api_ghrepo_run_detect():
 
 @app.route("/api/ghrepo/detect_output/<token>/<path:filename>")
 def api_ghrepo_detect_output(token, filename):
-    # 평활 비교는 result_dir 아래 평활 이름별 하위 폴더에 결과를 두므로
-    # "<평활>/<파일>" 형태의 한 단계 중첩까지 허용한다.
-    parts = filename.split("/")
-    if (not re.fullmatch(r"[0-9a-f]{12}", token) or len(parts) > 2
-            or not all(re.fullmatch(r"[A-Za-z0-9._-]+", q) and q != ".." for q in parts)):
+    if not re.fullmatch(r"[0-9a-f]{12}", token) or "/" in filename or ".." in filename:
         return ("bad request", 400)
     path = os.path.join(_GH_DETECT_OUTPUT_DIR, token, filename)
     if not os.path.isfile(path):
