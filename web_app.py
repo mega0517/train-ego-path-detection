@@ -23,7 +23,41 @@ import subprocess
 import sys
 import threading
 
-import torch
+
+def _pin_to_one_full_gpu():
+    """Restrict this process to a single non-MIG GPU before torch initializes.
+
+    CUDA refuses to open a device set that mixes MIG instances with whole GPUs:
+    with MIG enabled on any card, ``torch.cuda.device_count()`` still counts every
+    card from NVML, but the first real CUDA call asserts and torch falls back to
+    CPU for the whole app. Picking one full GPU up front avoids that, and has to
+    happen before ``import torch`` because the visible set is read once at init.
+    """
+    if os.environ.get("CUDA_VISIBLE_DEVICES") is not None:
+        return  # caller already chose; respect it
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=uuid,memory.used,mig.mode.current",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+    except Exception:  # noqa: BLE001 - no nvidia-smi is just a CPU host
+        return
+    free = []
+    for line in out.strip().splitlines():
+        parts = [q.strip() for q in line.split(",")]
+        if len(parts) >= 3 and parts[2] != "Enabled":
+            try:
+                free.append((int(parts[1]), parts[0]))
+            except ValueError:
+                pass
+    if free:
+        os.environ["CUDA_VISIBLE_DEVICES"] = min(free)[1]  # least occupied
+
+
+_pin_to_one_full_gpu()
+
+import torch  # noqa: E402 - must follow the CUDA_VISIBLE_DEVICES pin above
 import yaml
 from flask import Flask, g, jsonify, render_template, request, Response, send_file, stream_with_context
 from PIL import Image
@@ -292,9 +326,14 @@ def device_status():
 # --------------------------------------------------------------------------- #
 # Detector handling
 # --------------------------------------------------------------------------- #
-def get_detector(model_path, device):
-    """Return a cached Detector for (model_path, device), constructing if needed."""
-    key = (model_path, device)
+def get_detector(model_path, device, smoothing=None):
+    """Return a cached Detector for (model_path, device, smoothing).
+
+    Smoothing is fixed at construction, so a smoothed detector is a separate
+    cache entry rather than a mutation of the unsmoothed one -- otherwise the
+    two would share filter state and each would see the other's frames.
+    """
+    key = (model_path, device, smoothing)
     with _detector_lock:
         det = _detector_cache.get(key)
         if det is None:
@@ -303,6 +342,7 @@ def get_detector(model_path, device):
                 crop_coords=None,
                 runtime="pytorch",
                 device=device,
+                smoothing=smoothing,
             )
             _detector_cache[key] = det
         return det
@@ -317,9 +357,9 @@ def build_crop_coords(mode, coords, config):
     return None
 
 
-def prepare_detector(model_path, device, crop_mode, crop_coords):
+def prepare_detector(model_path, device, crop_mode, crop_coords, smoothing=None):
     """Fetch a detector and reset its per-inference state (crop + temporal)."""
-    det = get_detector(model_path, device)
+    det = get_detector(model_path, device, smoothing)
     det.crop_coords = build_crop_coords(crop_mode, crop_coords, det.config)
     det.reset_temporal()
     return det
@@ -358,6 +398,47 @@ def run_both(img, det_single, det_rnn):
         if rnn_res is not None:
             rnn_vis = draw_egopath(img, rnn_res, crop_coords=crop_r)
     return single_vis, rnn_vis, timing
+
+
+SMOOTHING_WARMUP_FRAMES = 8
+
+
+def run_smoothed_on_sequence(det, img, server_path, warmup=SMOOTHING_WARMUP_FRAMES):
+    """Detect ``img`` with a smoothing filter primed on the frames before it.
+
+    A temporal filter has nothing to average on a lone still image -- its first
+    output is the raw prediction -- so showing it next to the unsmoothed result
+    would draw the identical path twice. When the image belongs to a sequence
+    folder (the event clips are ``f001.jpg``, ``f002.jpg``, ...), replaying the
+    preceding frames first puts the filter in the state it would really be in at
+    that point of the clip, which is what the comparison is meant to show.
+
+    Returns (visualisation, frames_used_for_warmup).
+    """
+    used = 0
+    if server_path:
+        folder = os.path.dirname(server_path)
+        try:
+            siblings = sorted(
+                f for f in os.listdir(folder)
+                if os.path.splitext(f)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS
+            )
+        except OSError:
+            siblings = []
+        try:
+            i = siblings.index(os.path.basename(server_path))
+        except ValueError:
+            i = -1
+        if i > 0:
+            for name in siblings[max(0, i - warmup):i]:
+                try:
+                    with Image.open(os.path.join(folder, name)) as prev:
+                        det.detect(prev.convert("RGB"))
+                    used += 1
+                except (OSError, ValueError):
+                    pass  # a damaged neighbour just shortens the warm-up
+    crop = det.get_crop_coords()
+    return draw_egopath(img, det.detect(img), crop_coords=crop), used
 
 
 def detectors_for_request(model_name, device, crop_mode, crop_coords):
@@ -3981,18 +4062,40 @@ def api_ghrepo_run_detect_compare():
     if device not in available_devices():
         return jsonify({"error": f"사용할 수 없는 장비: {device}"}), 400
 
+    smoothing = (request.form.get("smoothing") or "none").strip().lower()
+    if not re.fullmatch(r"none|rnn|boxcar\d+|ema\d*\.?\d+", smoothing):
+        return jsonify({"error": f"잘못된 smoothing: {smoothing}"}), 400
+
     try:
         det_single, det_rnn = detectors_for_request(model, device, crop_mode, crop_coords)
         single_vis, rnn_vis, timing = run_both(img, det_single, det_rnn)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-    return jsonify({
+    payload = {
         "ok": True,
         "single": pil_to_data_uri(single_vis),
         "rnn": pil_to_data_uri(rnn_vis),
         "timing": timing,
-    })
+    }
+
+    if smoothing not in ("none", "rnn"):
+        base_path, rnn_path = model_paths_for(model)
+        target = base_path if base_path and os.path.exists(base_path) else rnn_path
+        try:
+            import time
+            det_sm = prepare_detector(target, device, crop_mode, crop_coords, smoothing)
+            t = time.perf_counter()
+            sm_vis, used = run_smoothed_on_sequence(
+                det_sm, img.convert("RGB"), server_path)
+            payload["timing"]["smoothed_ms"] = round((time.perf_counter() - t) * 1000, 1)
+            payload["smoothed"] = pil_to_data_uri(sm_vis)
+            payload["smoothing"] = smoothing
+            payload["warmup"] = used
+        except Exception as e:  # noqa: BLE001 - a failed filter must not lose the pair
+            payload["smoothing_error"] = str(e)
+
+    return jsonify(payload)
 
 
 # --- 폴더 내 이미지 다수를 detect.py로 연속 추론 (Laurent 원본 탭, 서버 파일 선택 시 폴더도 고를 수 있게) ---

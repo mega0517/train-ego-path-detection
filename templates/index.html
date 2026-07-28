@@ -2783,11 +2783,22 @@
         if (d.error) { statusEl.textContent = "오류: " + d.error; return; }
         const t = d.timing || {};
         statusEl.textContent = "✅ 완료";
-        resultEl.innerHTML = `
-          <div class="gh-run-images">
+        let panels = `
             <div><div class="mut">기존 모델 (${t.single_ms != null ? t.single_ms + "ms" : "-"})</div><img src="${d.single}"></div>
-            <div><div class="mut">RNN 모델 (${t.rnn_ms != null ? t.rnn_ms + "ms" : "-"})</div><img src="${d.rnn}"></div>
-          </div>`;
+            <div><div class="mut">RNN 모델 (${t.rnn_ms != null ? t.rnn_ms + "ms" : "-"})</div><img src="${d.rnn}"></div>`;
+        if (d.smoothed) {
+          // 예열 프레임 수를 함께 보여준다: 0이면 필터가 아직 비어 있어
+          // 기존 모델과 같은 그림이 나오는 게 정상이라는 뜻이다.
+          const warm = d.warmup > 0
+            ? `앞 ${d.warmup}프레임 예열`
+            : `예열 없음 — 기존 모델과 동일`;
+          panels += `
+            <div><div class="mut">${d.smoothing} (${t.smoothed_ms != null ? t.smoothed_ms + "ms" : "-"}, ${warm})</div><img src="${d.smoothed}"></div>`;
+        }
+        resultEl.innerHTML = `<div class="gh-run-images">${panels}</div>` +
+          (d.smoothing_error
+            ? `<div class="mut">평활 실패: ${d.smoothing_error.replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]))}</div>`
+            : "");
         if (serverPath) ghDtSaveRecentPath(serverPath);
       } catch (e) {
         btn.disabled = false;
