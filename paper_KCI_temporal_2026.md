@@ -68,11 +68,13 @@ Ego-path detection—identifying the track a train is running on—is hardest at
 
 이에 본 논문은 **실효 해상도**를 다음과 같이 정량화한다. 궤도가 위치하는 중앙–하단 영역을 절반으로 축소했다가 원래 크기로 복원한 뒤 원본과의 평균 절대 차이를 계산한다.
 
-```
-hi = mean | I − up(down(I, 2), 2) |,   I = 중앙–하단 영역 (세로 50–95%, 가로 22–78%)
-```
+*hi* = mean | *I* − up(down(*I*, 2), 2) |,  여기서 *I* 는 중앙–하단 영역(세로 50–95%, 가로 22–78%)이다.
 
 이 값은 화소율 절반을 넘는 고주파 성분의 양에 해당하므로, 업스케일된 영상에서는 0에 가깝다. 육안 검증을 통해 임계값을 확정하였다: **hi = 2.63에서는 침목이 뭉개져 텅레일 판별이 불가능**하였고 **hi = 3.00부터 레일 윤곽과 침목이 분리되어 판별이 가능**하였으므로 **hi ≥ 3.0**을 기준으로 삼았다.
+
+![그림 1. 실효 해상도 기준의 효과. 좌: 재추출 전(≤720p 원본에서 절단), 우: 동일 구간을 1080p 원본에서 재추출. 명목 해상도는 양쪽 모두 1280×720이나 좌측은 침목과 레일이 뭉개져 텅레일 밀착을 판별할 수 없다.](figures/fig_resolution.png)
+
+**그림 1.** 실효 해상도 기준의 효과 (좌: 재추출 전, 우: 재추출 후)
 
 초기 수집분 318개 중 99개(31%)가 기준에 미달하였다. 원인 분석 결과 원본 영상 32편 중 29편이 1080p 이상(4K 10편)이었음에도 수집 과정에서 720p 이하로 내려받은 것이 원인이었다. 따라서 새 영상을 탐색하는 대신 **동일 구간을 고해상도로 재추출**하여 56개를 복구하였다. 재추출 시 각 이벤트의 원본 시각과 창 정보를 그대로 사용하므로 기존 큐레이션(분기/합류 분류)이 보존된다. 최종적으로 데이터셋 전체가 기준을 통과하며, 재추출본의 실효 해상도 중앙값은 4.89로 삭제 대상이었던 값(2점대)의 약 두 배이다.
 
@@ -92,6 +94,10 @@ Laurent[1]가 지적한 불확실 기간은 분기기 통과 이후 수 초에 �
 | 직후 | 0 ~ 2.5 s | 통과 직후, 경로가 실제로 변하는 구간 |
 | **불확실** | **2.5 ~ 6 s** | **분기부가 시야를 벗어난 뒤 궤도 정렬로 진로가 확인되기 전** |
 | 후기 | 6 ~ 10 s | 진로가 확정된 이후 |
+
+![그림 2. 이벤트 구조와 평가 구간 정의. 이벤트는 분기기 통과 시각을 중심으로 20초 창을 4 fps로 표본화한 81 프레임이며, 평가 구간은 초 단위로 정의된다.](figures/fig_zones.png)
+
+**그림 2.** 이벤트 구조와 평가 구간 정의
 
 구간 경계는 각 이벤트의 표본화율(4 fps)로 프레임 인덱스에 환산한다. 프레임 단위와 초 단위를 혼동하면 구간 폭이 4배로 어긋나므로, 본 프로토콜은 모든 경계를 초로 규정한다.
 
@@ -181,6 +187,12 @@ rnn-1fps와 rnn-4fps는 표본화 간격만 다른 통제쌍이다. 간격을 �
 
 평활의 강도에 따른 거동도 확인된다. 강한 평활(boxcar5)은 안정성을 가장 크게 개선하지만 정확도를 −0.0415 잃어 효율이 680으로 떨어진다. 지수 감쇠를 쓰는 EMA가 동일 창 길이의 단순 평균(boxcar3, 효율 1,094)보다 효율이 높은 것도, 오래된 관측을 약하게 반영하여 지연 비용을 줄이기 때문으로 해석된다.
 
+그림 3은 불확실 구간의 연속 3 프레임(간격 0.25초)에서 세 방법의 예측을 비교한 것이다. 단일 프레임 모델(base)은 프레임마다 경로가 크게 이동하는 반면, 학습형 정련(rnn)은 그 이동을 부분적으로만 완화하고, EMA는 세 프레임에 걸쳐 일관된 경로를 유지한다.
+
+![그림 3. 불확실 구간에서의 정성 비교. 같은 3개 연속 프레임(0.25초 간격)에 대해 행마다 다른 방법의 예측을 겹쳐 그렸다.](figures/fig_qualitative.png)
+
+**그림 3.** 불확실 구간 연속 프레임에서의 예측 비교 (위: base, 가운데: rnn, 아래: EMA0.5)
+
 결론적으로 0.46 M 파라미터와 별도의 시퀀스 학습을 요구하는 출력 수준 정련부는, 후처리 한 줄로 구현되는 지수이동평균 대비 정당화되지 않는다. 학습형 시간 모듈을 제안하는 연구는 단일 프레임 기준선뿐 아니라 **이동평균 기준선과의 비교를 포함**해야 한다.
 
 ### 6.4 가림 증강의 재검토
@@ -250,16 +262,22 @@ rnn-occ는 모든 구간에서 최하위(지터 −25.7%, IoU −0.0071)이다. 
 
 ## 참고문헌
 
-[1] T. Laurent, "Train Ego-Path Detection on Railway Tracks Using End-to-End Deep Learning," arXiv:2403.13094, 2024.
+[1] T. Laurent, "Train Ego-Path Detection on Railway Tracks Using End-to-End Deep Learning," *arXiv preprint* arXiv:2403.13094, 2024.
 
-[2] O. Zendel, M. Murschitz, M. Zeilinger, D. Steininger, S. Abbasi, C. Beleznai, "RailSem19: A Dataset for Semantic Rail Scene Understanding," in *Proc. IEEE/CVF Conf. Computer Vision and Pattern Recognition Workshops (CVPRW)*, 2019, pp. 1221–1229.
+[2] O. Zendel, M. Murschitz, M. Zeilinger, D. Steininger, S. Abbasi, and C. Beleznai, "RailSem19: A Dataset for Semantic Rail Scene Understanding," in *Proc. IEEE/CVF Conf. Computer Vision and Pattern Recognition Workshops (CVPRW)*, Long Beach, CA, USA, 2019, pp. 1221–1229.
 
-[3] R. Tagiew et al., "OSDaR23: Open Sensor Data for Rail 2023," in *Proc. 8th Int. Conf. Robotics and Automation Engineering (ICRAE)*, 2023.
+[3] R. Tagiew et al., "OSDaR23: Open Sensor Data for Rail 2023," *arXiv preprint* arXiv:2305.03001, 2023.
 
-[4] N. Ravi et al., "SAM 2: Segment Anything in Images and Videos," arXiv:2408.00714, 2024.
+[4] N. Ravi et al., "SAM 2: Segment Anything in Images and Videos," *arXiv preprint* arXiv:2408.00714, 2024.
 
-[5] M. Tan, Q. Le, "EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks," in *Proc. Int. Conf. Machine Learning (ICML)*, 2019, pp. 6105–6114.
+[5] M. Tan and Q. V. Le, "EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks," in *Proc. 36th Int. Conf. Machine Learning (ICML)*, Long Beach, CA, USA, 2019, pp. 6105–6114.
 
-[6] K. He, X. Zhang, S. Ren, J. Sun, "Deep Residual Learning for Image Recognition," in *Proc. IEEE Conf. Computer Vision and Pattern Recognition (CVPR)*, 2016, pp. 770–778.
+[6] K. He, X. Zhang, S. Ren, and J. Sun, "Deep Residual Learning for Image Recognition," in *Proc. IEEE Conf. Computer Vision and Pattern Recognition (CVPR)*, Las Vegas, NV, USA, 2016, pp. 770–778.
 
-[7] C. Rupprecht et al., "Learning in an Uncertain World: Representing Ambiguity Through Multiple Hypotheses," in *Proc. IEEE Int. Conf. Computer Vision (ICCV)*, 2017, pp. 3591–3600.
+[7] C. Rupprecht et al., "Learning in an Uncertain World: Representing Ambiguity Through Multiple Hypotheses," in *Proc. IEEE Int. Conf. Computer Vision (ICCV)*, Venice, Italy, 2017, pp. 3591–3600.
+
+[8] K. Cho et al., "Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation," in *Proc. Conf. Empirical Methods in Natural Language Processing (EMNLP)*, Doha, Qatar, 2014, pp. 1724–1734.
+
+[9] D. H. Douglas and T. K. Peucker, "Algorithms for the Reduction of the Number of Points Required to Represent a Digitized Line or its Caricature," *Cartographica*, vol. 10, no. 2, pp. 112–122, 1973.
+
+> ※ 학술지 투고 시 각 문헌의 권·호·페이지 및 DOI를 최종 확인·보완할 것.

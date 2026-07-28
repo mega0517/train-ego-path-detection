@@ -1,11 +1,17 @@
-"""Build paper_KCI.hwpx (single-column) and paper_KCI_2col.hwpx (journal 2-column)
-from paper_draft_KCI.md using python-hwpx."""
+"""Build single-column and journal 2-column HWPX from a paper markdown file.
+
+  python experiments/make_hwpx.py [input.md] [out_basename]
+
+기본값은 기존 초안(paper_draft_KCI.md -> paper_KCI[_2col].hwpx)이라 이전
+호출 방식이 그대로 동작한다."""
 import os, re, sys
 sys.path.insert(0, "/data3/bhkim/workspace/train-ego-path-detection")
 os.chdir("/data3/bhkim/workspace/train-ego-path-detection")
 from hwpx import HwpxDocument
 
-MD = open("paper_draft_KCI.md", encoding="utf-8").read()
+SRC = sys.argv[1] if len(sys.argv) > 1 else "paper_draft_KCI.md"
+BASE = sys.argv[2] if len(sys.argv) > 2 else "paper_KCI"
+MD = open(SRC, encoding="utf-8").read()
 
 
 def strip_inline(s):
@@ -151,6 +157,6 @@ def build(two_col, out_path):
           f"contains 초록: {'국문 초록' in txt}, 표4: {'표 4' in txt}")
 
 
-build(False, "paper_KCI.hwpx")
-build(True, "paper_KCI_2col.hwpx")
+build(False, f"{BASE}.hwpx")
+build(True, f"{BASE}_2col.hwpx")
 print("DONE")
