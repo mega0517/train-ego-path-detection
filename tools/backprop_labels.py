@@ -71,6 +71,26 @@ def far_centre(mask):
     return float(xs.mean() / mask.shape[1]) if xs.size else None
 
 
+def _extend_to_bottom(rail, height):
+    """Carry a rail down to the last image row along its own final direction.
+
+    A predicted mask stops wherever the model's path ends, which is usually short
+    of the image edge; a hand label runs to the bottom because the track the train
+    is on always does. The crop-box augmentation reads that bottom row, so the gap
+    would throw away the sample. The last few points give the direction to carry
+    down, and it is a short extrapolation over the nearest, least foreshortened
+    part of the path.
+    """
+    if len(rail) < 2 or rail[-1][1] >= height - 1:
+        return rail
+    (x0, y0), (x1, y1) = rail[-2], rail[-1]
+    if y1 == y0:
+        return rail + [[x1, height - 1]]
+    slope = (x1 - x0) / (y1 - y0)
+    x = int(round(x1 + slope * (height - 1 - y1)))
+    return rail + [[x, height - 1]]
+
+
 def mask_to_rails(mask, step=8):
     """Left and right boundary of the filled path, as the label format wants them."""
     rows = np.nonzero(mask.any(axis=1))[0]
@@ -84,7 +104,8 @@ def mask_to_rails(mask, step=8):
             right.append([int(xs[-1]), int(y)])
     if len(left) < 3:
         return None
-    return left, right
+    h = mask.shape[0]
+    return _extend_to_bottom(left, h), _extend_to_bottom(right, h)
 
 
 def warp_back(mask_next, img_t, img_next):
