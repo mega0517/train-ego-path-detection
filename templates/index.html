@@ -69,6 +69,17 @@
     .canvas-wrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
       background: #1b232b; border-radius: 8px; overflow: hidden; }
     #lblCanvas { max-width: 100%; max-height: 100%; cursor: crosshair; }
+    /* 라벨링 좌측 메뉴가 세로로 길어 스크롤을 계속 오가게 되므로, 카드를 접을 수
+       있게 하고 자주 쓰지 않는 것은 기본으로 접어 둔다. 접힌 내용도 DOM에 남아
+       있어 자동 라벨/SAM2 버튼을 코드에서 참조하는 데는 영향이 없다. */
+    details.card > summary { cursor: pointer; list-style: none; outline: none;
+      display: flex; align-items: center; gap: 6px; }
+    details.card > summary::-webkit-details-marker { display: none; }
+    details.card > summary::before { content: "\25B8"; color: var(--muted); font-size: 12px;
+      transition: transform .12s; }
+    details.card[open] > summary::before { transform: rotate(90deg); }
+    details.card > summary h2 { margin: 0; }
+    details.card:not([open]) { padding-bottom: 10px; }
     .img-list { max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
     .img-item { display: flex; gap: 6px; padding: 5px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #f0f0f0; }
     .img-item:hover { background: #eef6ef; }
@@ -931,8 +942,8 @@
 
   <div class="layout" id="pageLabel">
     <aside class="sidebar">
-      <div class="card span2">
-        <h2>데이터셋 라벨링</h2>
+      <details class="card span2" open>
+        <summary><h2 style="display:inline">데이터셋 라벨링</h2></summary>
         <label>이미지 폴더 (서버 경로)</label>
         <input type="text" id="lblFolder" class="pathinput" list="lblFolderRecent"
                placeholder="/data3/.../images" />
@@ -961,10 +972,10 @@
           <button class="btn" id="lblRevDone" style="background:#2e7d32;" title="이 프레임 검수 완료">✓ 확인</button>
         </div>
         <div class="info" id="lblRevInfo">모델들이 서로 다르게 답한 프레임만 모은 큐입니다. 자동 라벨이 맞으면 ✓만, 틀리면 점을 고친 뒤 저장하고 ✓를 누르세요.</div>
-      </div>
+      </details>
 
-      <div class="card span2">
-        <h2>그리는 레일</h2>
+      <details class="card span2" open>
+        <summary><h2 style="display:inline">그리는 레일</h2></summary>
         <div class="rail-btns">
           <button class="btn lon" id="lblLeftBtn" style="flex:1;">왼쪽 레일</button>
           <button class="btn off" id="lblRightBtn" style="flex:1;">오른쪽 레일</button>
@@ -975,12 +986,18 @@
           <button class="btn" id="lblClearBtn" style="flex:1;background:#9e9e9e;">레일 지우기</button>
           <button class="btn" id="lblClearAllBtn" style="flex:1;background:#c62828;">모두 지우기</button>
         </div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;cursor:pointer;"
+               title="레일은 y에 대해 단일값인 매끄러운 곡선이므로, 찍은 점 3~4개를 지나는 단조 3차 곡선으로 사이를 채웁니다. 단조 보간이라 곡선이 점 바깥으로 튀지 않습니다.">
+          <input type="checkbox" id="lblSpline" checked> 곡선 보간 — 점 3~4개만 찍으면 나머지를 채움
+        </label>
+        <label style="margin-top:6px;">보간 간격: <span id="lblSplineStepVal">8</span> px</label>
+        <input type="range" id="lblSplineStep" min="2" max="24" value="8" style="width:100%;" />
         <label style="margin-top:8px;">선 굵기: <span id="lblLwVal">5</span> px</label>
         <input type="range" id="lblLineWidth" min="1" max="15" value="5" style="width:100%;" />
-      </div>
+      </details>
 
-      <div class="card span2">
-        <h2>자동 라벨 (학습된 모델로 레일 검출)</h2>
+      <details class="card span2">
+        <summary><h2 style="display:inline">자동 라벨 (학습된 모델로 레일 검출)</h2></summary>
         <div class="info">학습된 모델로 모든 프레임의 레일을 직접 검출해 라벨을 생성합니다. 시드·추적이 없어 드리프트가 없으며, 도메인이 맞는 모델일수록 정확합니다. regression 모델은 좌·우 레일을 직접 예측해 라벨용으로 가장 깔끔합니다. 생성 후 어긋난 프레임만 수동 보정하세요.</div>
         <div class="grid2" style="margin-top:6px;">
           <div>
@@ -997,9 +1014,9 @@
           <input type="checkbox" id="lblDetectExact" checked> detect.py 정확 일치 (auto 크롭 · 단순화 없음)
         </label>
         <button class="btn" id="lblDetectBtn" style="margin-top:8px;background:#8e24aa;">모델로 자동 라벨 →</button>
-      </div>
-      <div class="card span2">
-        <h2>SAM2 자동 라벨 (비디오 전파)</h2>
+      </details>
+      <details class="card span2">
+        <summary><h2 style="display:inline">SAM2 자동 라벨 (비디오 전파)</h2></summary>
         <div class="info">SAM2로 첫 프레임의 궤도를 세그멘테이션해 폴더의 모든 프레임에 전파합니다(연속 비디오 프레임에 적합, 도메인 무관). 프롬프트는 마우스로 궤도 위를 클릭해 지정하거나, 비우면 하단 중앙을 자동 시드합니다. 생성 후 어긋난 프레임만 보정하세요.</div>
         <div class="rail-btns" style="margin-top:6px;">
           <button class="btn" id="lblSam2PickBtn" style="flex:1;background:#00838f;">🖱 클릭으로 프롬프트</button>
@@ -1009,7 +1026,7 @@
         <label style="margin-top:6px;">또는 좌표 직접 입력 ("x,y;x,y")</label>
         <input type="text" id="lblSam2Points" placeholder="비우면 자동/클릭값 사용" />
         <button class="btn" id="lblSam2Btn" style="margin-top:6px;background:#00838f;">SAM2로 자동 라벨 →</button>
-      </div>
+      </details>
       <div class="progress-wrap span2" id="lblProgWrap"><div class="progress-bar" id="lblProgBar"></div></div>
       <div class="status-line span2" id="lblStatus">폴더와 주석 JSON을 설정하면 이미지를 불러옵니다.</div>
 
@@ -3662,6 +3679,51 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
     const lbl = { images: [], idx: -1, left: [], right: [], rail: "left",
                   origW: 1, origH: 1, dispW: 1, dispH: 1, img: new Image(), lineWidth: 5,
                   sam2Mode: false, sam2Points: [] };
+    // 레일은 화면 세로축에 대해 단일값인 매끄러운 곡선이다. 그래서 x를 y의 함수로
+    // 보간하고, Fritsch-Carlson 단조 3차를 쓴다 — Catmull-Rom 같은 보간은 점 사이에서
+    // 바깥으로 튀는데, 레일에서 그 오버슈트는 경로를 옆 선로에 올려놓는 것과 같다.
+    function monotoneRail(pts, step) {
+      if (pts.length < 3) return pts.slice();
+      const p = pts.slice().sort((a, b) => a[1] - b[1]);
+      const ys = [], xs = [];
+      for (const [x, y] of p) {                       // 같은 y가 겹치면 기울기가 무한이 된다
+        if (ys.length && y === ys[ys.length - 1]) { xs[xs.length - 1] = x; continue; }
+        ys.push(y); xs.push(x);
+      }
+      const n = ys.length;
+      if (n < 3) return pts.slice();
+      const d = [], m = new Array(n);
+      for (let i = 0; i < n - 1; i++) d.push((xs[i + 1] - xs[i]) / (ys[i + 1] - ys[i]));
+      m[0] = d[0]; m[n - 1] = d[n - 2];
+      for (let i = 1; i < n - 1; i++) {
+        if (d[i - 1] * d[i] <= 0) m[i] = 0;           // 변곡점에서는 평평하게 (단조성 유지)
+        else m[i] = (d[i - 1] + d[i]) / 2;
+      }
+      for (let i = 0; i < n - 1; i++) {
+        if (d[i] === 0) { m[i] = m[i + 1] = 0; continue; }
+        const a = m[i] / d[i], b = m[i + 1] / d[i], h = Math.hypot(a, b);
+        if (h > 3) { m[i] = 3 * a * d[i] / h; m[i + 1] = 3 * b * d[i] / h; }
+      }
+      const out = [];
+      for (let i = 0; i < n - 1; i++) {
+        const y0 = ys[i], y1 = ys[i + 1], h = y1 - y0;
+        for (let y = y0; y < y1; y += step) {
+          const t = (y - y0) / h, t2 = t * t, t3 = t2 * t;
+          const x = (2 * t3 - 3 * t2 + 1) * xs[i] + (t3 - 2 * t2 + t) * h * m[i]
+                  + (-2 * t3 + 3 * t2) * xs[i + 1] + (t3 - t2) * h * m[i + 1];
+          out.push([Math.round(x), Math.round(y)]);
+        }
+      }
+      out.push([xs[n - 1], ys[n - 1]]);
+      return out;
+    }
+    // 화면과 저장에 실제로 쓰이는 폴리라인. 보간이 꺼져 있으면 찍은 점 그대로.
+    function railCurve(pts) {
+      if (!$("lblSpline") || !$("lblSpline").checked) return pts;
+      const step = parseInt(($("lblSplineStep") || {}).value || "8", 10);
+      return monotoneRail(pts, Math.max(2, step));
+    }
+
     const lblCanvas = $("lblCanvas"), lblCtx = lblCanvas.getContext("2d");
 
     $("lblBrowseBtn").onclick = () => {
@@ -3952,12 +4014,14 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
     function drawRail(pts, color) {
       if (!pts.length) return;
       const lw = lbl.lineWidth;
-      // polyline
+      // 선은 보간된 곡선을 그리고 손잡이는 찍은 점만 남긴다: 보간점까지 노드로 보이면
+      // 어느 점을 끌면 되는지 알 수 없고, 실수로 보간점을 끌면 곡선이 꺾인다.
+      const line = railCurve(pts);
       lblCtx.save();
       lblCtx.strokeStyle = color; lblCtx.lineWidth = lw;
       lblCtx.lineJoin = "round"; lblCtx.lineCap = "round";
       lblCtx.beginPath();
-      pts.forEach((p, i) => { const [x, y] = o2d(p); i ? lblCtx.lineTo(x, y) : lblCtx.moveTo(x, y); });
+      line.forEach((p, i) => { const [x, y] = o2d(p); i ? lblCtx.lineTo(x, y) : lblCtx.moveTo(x, y); });
       lblCtx.stroke();
       lblCtx.restore();
       // glowing, pulsing nodes (bright white core + colored halo)
@@ -4096,7 +4160,12 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         redrawLabel();
       }
     };
-    $("lblUndoBtn").onclick = () => { (lbl.rail === "left" ? lbl.left : lbl.right).pop(); redrawLabel(); };
+    $("lblSplineStep").oninput = (e) => {
+      $("lblSplineStepVal").textContent = e.target.value;
+      redrawLabel();
+    };
+    $("lblSpline").onchange = redrawLabel;
+        $("lblUndoBtn").onclick = () => { (lbl.rail === "left" ? lbl.left : lbl.right).pop(); redrawLabel(); };
     $("lblClearBtn").onclick = () => { if (lbl.rail === "left") lbl.left = []; else lbl.right = []; redrawLabel(); };
     $("lblClearAllBtn").onclick = () => { lbl.left = []; lbl.right = []; redrawLabel(); };
     // Geometry check: flag labels whose track gauge is not perspective-consistent.
@@ -4161,8 +4230,8 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       if (lbl.left.length < 2 || lbl.right.length < 2) {
         $("lblStatus").textContent = "Each rail needs at least 2 points."; return false;
       }
-      const L = extendBottom(lbl.left, lbl.origH, lbl.origW);
-      const R = extendBottom(lbl.right, lbl.origH, lbl.origW);
+      const L = extendBottom(railCurve(lbl.left), lbl.origH, lbl.origW);
+      const R = extendBottom(railCurve(lbl.right), lbl.origH, lbl.origW);
       const fd = new FormData();
       fd.append("annots", $("lblAnnots").value.trim());
       fd.append("name", lbl.images[lbl.idx].name);
