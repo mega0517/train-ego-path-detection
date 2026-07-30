@@ -1020,38 +1020,38 @@
     <main class="main" style="position:relative;">
       <div class="canvas-wrap"><canvas id="lblCanvas"></canvas></div>
       <!-- 레일 조작은 그리는 동안 눈이 가 있는 곳에 있어야 하므로 캔버스 위에
-           올린다. 사이드바에 있으면 점을 찍다가 좌우로 시선을 옮겨야 했다. -->
-      <div id="lblRailBar" style="position:absolute;left:16px;top:16px;z-index:20;width:250px;
-           background:rgba(38,50,56,.90);padding:9px 10px;border-radius:10px;
+           올린다. 좁은 세로 패널로 두면 버튼이 줄바꿈되고 왼쪽 레일을 찍을 자리를
+           덮으므로, 아래쪽에 한 줄 툴바로 눕힌다. -->
+      <div id="lblRailBar" style="position:absolute;left:16px;bottom:16px;z-index:20;
+           display:flex;align-items:center;gap:8px;flex-wrap:wrap;max-width:calc(100% - 320px);
+           background:rgba(38,50,56,.90);padding:7px 10px;border-radius:10px;
            box-shadow:0 2px 10px rgba(0,0,0,.35);color:#eceff1;font-size:12px;">
-        <div style="display:flex;gap:6px;align-items:center;">
-          <button class="btn lon" id="lblLeftBtn" style="flex:1;">왼쪽 레일</button>
-          <button class="btn off" id="lblRightBtn" style="flex:1;">오른쪽 레일</button>
-          <button class="btn" id="lblRailFold" title="패널 접기 — 왼쪽 레일을 화면 가장자리까지 찍어야 할 때"
-                  style="background:#455a64;padding:4px 7px;">▲</button>
+        <div style="display:flex;gap:0;">
+          <button class="btn lon" id="lblLeftBtn"
+                  style="border-radius:6px 0 0 6px;white-space:nowrap;">왼쪽 레일</button>
+          <button class="btn off" id="lblRightBtn"
+                  style="border-radius:0 6px 6px 0;white-space:nowrap;">오른쪽 레일</button>
         </div>
-        <div id="lblRailBody">
-        <div style="display:flex;gap:6px;margin-top:6px;">
-          <button class="btn" id="lblUndoBtn" style="flex:1;background:#6b7280;">점 취소</button>
-          <button class="btn" id="lblClearBtn" style="flex:1;background:#9e9e9e;">레일</button>
-          <button class="btn" id="lblClearAllBtn" style="flex:1;background:#c62828;">모두</button>
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;"
+        <span style="width:1px;height:20px;background:#546e7a;"></span>
+        <button class="btn" id="lblUndoBtn" style="background:#6b7280;white-space:nowrap;">점 취소</button>
+        <button class="btn" id="lblClearBtn" style="background:#9e9e9e;white-space:nowrap;">레일 지우기</button>
+        <button class="btn" id="lblClearAllBtn" style="background:#c62828;white-space:nowrap;">모두</button>
+        <span style="width:1px;height:20px;background:#546e7a;"></span>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap;"
                title="레일은 y에 대해 단일값인 매끄러운 곡선이므로, 찍은 점 3~4개를 지나는 단조 3차 곡선으로 사이를 채웁니다. 단조 보간이라 곡선이 점 바깥으로 튀지 않습니다.">
-          <input type="checkbox" id="lblSpline" checked> 곡선 보간 (점 3~4개)
+          <input type="checkbox" id="lblSpline" checked> 곡선 보간
         </label>
-        <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
-          <span style="white-space:nowrap;color:#b0bec5;">간격 <span id="lblSplineStepVal">8</span></span>
-          <input type="range" id="lblSplineStep" min="2" max="24" value="8" style="flex:1;" />
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
-          <span style="white-space:nowrap;color:#b0bec5;">굵기 <span id="lblLwVal">5</span></span>
-          <input type="range" id="lblLineWidth" min="1" max="15" value="5" style="flex:1;" />
-        </div>
-        <div id="lblRailHint" style="margin-top:7px;color:#90a4ae;line-height:1.45;">
-          빈 곳=점 추가 · 선분=사이 삽입 · 드래그=이동 · 우클릭=삭제
-        </div>
-        </div>
+        <span style="display:flex;align-items:center;gap:5px;white-space:nowrap;color:#b0bec5;">
+          간격 <span id="lblSplineStepVal">8</span>
+          <input type="range" id="lblSplineStep" min="2" max="24" value="8" style="width:70px;" />
+        </span>
+        <span style="display:flex;align-items:center;gap:5px;white-space:nowrap;color:#b0bec5;">
+          굵기 <span id="lblLwVal">5</span>
+          <input type="range" id="lblLineWidth" min="1" max="15" value="5" style="width:70px;" />
+        </span>
+        <span id="lblRailHint" style="color:#78909c;white-space:nowrap;">
+          빈 곳=추가 · 선분=삽입 · 드래그=이동 · 우클릭=삭제
+        </span>
       </div>
       <!-- 저장/이동 액션 바: 사이드바 스크롤과 무관하게 항상 보이도록 캔버스 위에 고정 -->
       <div id="lblActionBar" style="position:absolute;right:16px;bottom:16px;z-index:20;display:flex;gap:8px;align-items:center;background:rgba(38,50,56,.88);padding:8px 10px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.35);">
@@ -1764,6 +1764,13 @@
       if (which === "files" && !fbLoaded) { fbInit(); fbLoaded = true; }
       if (which === "switch" && !swLoaded) { swInit(); swLoaded = true; }
       if (which === "ghrepo" && !ghLoaded) { ghInit(); ghLoaded = true; }
+      // 검수 큐는 라벨링 탭에 들어오면 바로 필요하므로 자동으로 읽는다. 한 번만
+      // 하는 이유는 ✓ 표시를 매번 되돌리지 않기 위해서다 — 다시 읽어야 하면
+      // "검수 큐 불러오기"가 그대로 있다.
+      if (which === "label" && !lblReviewLoaded) {
+        lblReviewLoaded = true;
+        if ($("lblRevLoad")) $("lblRevLoad").click();
+      }
     }
     $("tabInfer").onclick = () => showPage("infer");
     $("tabLabel").onclick = () => showPage("label");
@@ -1773,6 +1780,7 @@
     $("tabGhRepo").onclick = () => showPage("ghrepo");
 
     // ----- 분기기 Switch 이미지 갤러리 -----
+    let lblReviewLoaded = false;
     let swLoaded = false, SW = [], swView = [], swEv = 0;
     let swCacheBust = 0;       // 크롭 후 브라우저의 옛 프레임·썸네일 캐시를 무시하기 위한 값
     let swFrames = [], swMan = {}, swCenter = 0, swFi = 0, swTimer = null;
@@ -4172,13 +4180,6 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         (hit.rail === "left" ? lbl.left : lbl.right).splice(hit.i, 1);
         redrawLabel();
       }
-    };
-    $("lblRailFold").onclick = () => {
-      const body = $("lblRailBody"), bar = $("lblRailBar"), btn = $("lblRailFold");
-      const folded = body.style.display === "none";
-      body.style.display = folded ? "" : "none";
-      bar.style.width = folded ? "250px" : "auto";
-      btn.textContent = folded ? "\u25B2" : "\u25BC";
     };
     $("lblSplineStep").oninput = (e) => {
       $("lblSplineStepVal").textContent = e.target.value;
