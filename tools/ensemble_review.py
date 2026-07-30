@@ -59,6 +59,10 @@ def main():
                          " of the panel gives no path, so adding a model that often"
                          " gives none costs review time rather than buying accuracy.")
     ap.add_argument("--threshold", type=float, default=THRESHOLD)
+    ap.add_argument("--auto-name", default="egopath_labels_auto.json",
+                    help="the auto-labels this queue is review for. A frame missing"
+                         " from it has no label at all, which the panel cannot notice:"
+                         " the models answer the image, not the label file.")
     ap.add_argument("--summary", default="output/review_list_ensemble.json")
     ap.add_argument("--cache", default="output/ensemble_spread_div.json")
     ap.add_argument("--event-factor", type=float, default=4.0,
@@ -114,10 +118,25 @@ def main():
         if med > args.event_reject:
             rejected.append((os.path.basename(folder), med))
         limit = max(args.threshold, args.event_factor * med)
+        # A frame the auto-labeller skipped has no label to check, and agreement
+        # between the models cannot reveal that: they answer the image, not the
+        # label file. Left to the spread rule such a frame passes silently and ends
+        # up the one thing worse than a wrong label, which is no label and nobody
+        # looking.
+        try:
+            with open(os.path.join(folder, args.auto_name), encoding="utf-8") as fh:
+                auto = json.load(fh)
+        except (OSError, ValueError):
+            auto = {}
+        labelled = {k for k, v in auto.items()
+                    if isinstance(v, dict) and v.get("left_rail") and v.get("right_rail")}
         review = []
         for f in frames:
             v = spreads[f]
-            if v is None:
+            if os.path.basename(f) not in labelled:
+                review.append({"frame": os.path.basename(f),
+                               "reason": "자동 라벨 없음 (처음부터 그려야 함)"})
+            elif v is None:
                 review.append({"frame": os.path.basename(f),
                                "reason": "일부 모델이 경로를 못 냄"})
             elif v > limit:
