@@ -139,6 +139,11 @@ class Server:
 
     def __init__(self, gpu, model, root):
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=resolve_gpu(gpu))
+        # --attn sdpa only takes effect if the alpamayo checkout carries
+        # tools/alpamayo_server_sdpa.patch. That tree is not under version
+        # control, so the patch lives here. Without it transformers rejects the
+        # override on a missing class flag and silently falls back to eager:
+        # slower, same answers.
         cmd = [os.path.join(root, ".venv", "bin", "python"),
                os.path.join(root, "isaac_bridge", "alpamayo_server.py"),
                "--alpamayo-root", root, "--model", model, "--attn", "sdpa"]
