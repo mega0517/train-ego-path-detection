@@ -2,10 +2,19 @@
 """Run Alpamayo-R1 over a video and record everything it returns.
 
 The model does not produce a video. Per request it takes four consecutive
-frames plus an ego history and returns a predicted future trajectory, a
-chain-of-causation string, and the inference time. This script walks a video,
-asks once per sampled step, and writes the answers to one JSON file so the web
-app can replay them against the footage without holding a 10B model open.
+frames plus an ego history and returns a predicted trajectory for the next
+6.4 s, a chain-of-causation string, and the inference time. This script walks a
+video, asks once per sampled step, and writes the answers to one JSON file so
+the web app can replay them against the footage without holding a 10B model
+open.
+
+Read the chain of causation; do not read the trajectory. On dashcam footage the
+predicted path is always straight and exactly assumed_speed x 6.4 s long -- the
+kinematic default, carrying nothing from the scene. It does not respond to the
+ego history either: bending the history into a 25 m radius turn moves the
+prediction less than a metre. See N_FRAMES for why, and for what happens when
+you try to fix it. The reasoning text does track the scene, naming level
+crossing barriers, lead vehicles and speed limit signs as they appear.
 
 The ego history is synthesised as straight-line constant speed. A video alone
 does not say how the vehicle was moving, and the alternative -- estimating it
@@ -28,7 +37,25 @@ import tempfile
 import time
 
 ALPA_ROOT = os.environ.get("ALPAMAYO_ROOT", "/data3/bhkim/workspace/alpamayo")
-N_FRAMES = 4          # the model's message builder expects four views
+
+# Four frames from the one camera we have. The reference loader sends sixteen
+# images -- four instants 0.1 s apart across four cameras (cross left 120,
+# front wide 120, cross right 120, front tele 30), stacked camera-major -- and
+# create_message imposes no count of its own, so this is short of the protocol.
+# It stays this way on purpose. Three ways of filling sixteen slots were tried
+# on road_snow_night, six consecutive requests each:
+#
+#   four frames, one camera   forward 60-62 m, lateral 0.3-0.9 m, jitter 0.2 m
+#   sixteen, front duplicated forward 19-59 m, lateral 23-61 m,   jitter 6.9 m
+#   sixteen, front + 3 black  forward 38-53 m, lateral 34-47 m,   jitter 3.1 m
+#
+# The trajectory head reads the four cameras geometrically, so whatever fills
+# the three slots we cannot supply becomes false geometry, and the model turns
+# into it -- 40 m sideways in 6.4 s on a straight snow-covered road. The wilder
+# answers are the worse ones: they look informative and are invented, while the
+# straight line is visibly empty. None was checked against ground truth; these
+# clips have none, and physical_ai_av is not installed to compare on NVIDIA's.
+N_FRAMES = 4
 N_HISTORY = 16        # history steps, matching the server's own self-test
 
 

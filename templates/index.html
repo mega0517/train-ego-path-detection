@@ -463,6 +463,11 @@
       border-radius: 6px; padding: 9px 11px; color: #eceff1;
       font-size: 13px; line-height: 1.55; white-space: pre-wrap;
     }
+    .alpa-warn {
+      flex-shrink: 0; background: #3a2a12; border-left: 3px solid #c8791b;
+      border-radius: 4px; margin: 6px 0; padding: 7px 10px;
+      color: #f5deb8; font-size: 12px; line-height: 1.5;
+    }
   </style>
   <script src="/static/marked.min.js"></script>
 </head>
@@ -909,6 +914,14 @@
           <div class="alpa-cap">alpamayo 결과 — 예측 궤적 · 추론 · 지연</div>
           <div class="alpa-res">
             <canvas id="alpaBev" class="alpa-bev"></canvas>
+            <!-- 궤적을 크게 그려 두면 그것이 이 화면의 결론처럼 보인다. 실제로는
+                 단안 영상에서 늘 직선이고 길이는 가정 속도 × 6.4초일 뿐이다. -->
+            <div class="alpa-warn">
+              궤적은 참고용이 아닙니다. 이 모델은 카메라 4대를 기하적으로 읽는데
+              단안 영상으로는 채울 수 없어, 예측 경로가 장면과 무관하게 항상
+              직선(길이 = 가정 속도 × 6.4초)으로 나옵니다. 아래 추론 텍스트만
+              장면을 반영합니다.
+            </div>
             <div class="alpa-metrics" id="alpaMetrics">—</div>
             <div class="alpa-coc" id="alpaCoc">영상을 고르면 결과를 불러옵니다.</div>
           </div>
