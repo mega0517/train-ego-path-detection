@@ -4508,6 +4508,7 @@ def api_alpamayo_list():
             "name": n,
             "input": src,
             "output": _alpa_match_output(os.path.splitext(n)[0], out_dir, in_dir),
+            "results": os.path.isfile(_alpa_results_path(src)),
             "size": os.path.getsize(src),
         })
     # 출력이 입력과 같은 폴더에 있으면 그 출력 파일 자신도 영상이라 입력 목록에
@@ -4516,6 +4517,89 @@ def api_alpamayo_list():
     items = [it for it in items if it["input"] not in used]
     return jsonify({"ok": True, "in_dir": in_dir, "out_dir": out_dir,
                     "count": len(items), "items": items})
+
+
+def _alpa_results_path(video_path):
+    """tools/alpamayo_run.py가 쓰는 결과 파일 경로 (<영상>.alpamayo.json)."""
+    return os.path.splitext(video_path)[0] + ".alpamayo.json"
+
+
+@app.route("/api/alpamayo/results")
+def api_alpamayo_results():
+    """한 영상에 대한 alpamayo 추론 결과 전체.
+
+    모델은 영상을 내놓지 않는다. 프레임마다 예측 궤적과 chain-of-causation
+    문장, 소요 시간을 돌려줄 뿐이라, 미리 돌려 둔 결과를 영상 재생에 맞춰
+    보여 주는 것이 이 탭이 할 수 있는 전부다.
+    """
+    src = _under_data_root(request.args.get("path"))
+    if src is None:
+        return jsonify({"ok": False, "error": "데이터 루트 밖의 경로입니다."}), 400
+    rp = _alpa_results_path(src)
+    if not os.path.isfile(rp):
+        return jsonify({"ok": False, "error": "결과 파일이 없습니다.",
+                        "expected": rp}), 404
+    try:
+        with open(rp, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError) as exc:
+        return jsonify({"ok": False, "error": f"결과를 읽지 못했습니다: {exc}"}), 400
+    return jsonify({"ok": True, "path": rp, "doc": doc})
+
+
+_alpa_run_lock = threading.Lock()
+_alpa_running = {"path": None}
+
+
+@app.route("/api/alpamayo/run", methods=["POST"])
+def api_alpamayo_run():
+    """tools/alpamayo_run.py를 돌려 결과 JSON을 만들고 진행률을 흘려보낸다.
+
+    한 번에 하나만 돌린다. 10B 모델이 GPU에 두 벌 올라가면 그 카드에서 돌던
+    다른 작업까지 같이 죽는다.
+    """
+    src = _under_data_root(request.form.get("path"))
+    if src is None or not os.path.isfile(src):
+        return jsonify({"ok": False, "error": "영상을 찾을 수 없습니다."}), 400
+    fps = request.form.get("fps", "2")
+    speed = request.form.get("speed", "14")
+    gpu = request.form.get("gpu", "2")
+
+    with _alpa_run_lock:
+        if _alpa_running["path"]:
+            return jsonify({"ok": False,
+                            "error": f"이미 실행 중입니다: {os.path.basename(_alpa_running['path'])}"}), 409
+        _alpa_running["path"] = src
+
+    def gen():
+        cmd = [sys.executable, os.path.join(BASE_PATH, "tools", "alpamayo_run.py"),
+               src, "--fps", str(fps), "--speed", str(speed), "--gpu", str(gpu)]
+        yield _fb_sse({"type": "start", "name": os.path.basename(src), "cmd": " ".join(cmd)})
+        proc = None
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, bufsize=1)
+            for line in proc.stdout:
+                line = line.rstrip()
+                if not line:
+                    continue
+                ev = {"type": "log", "line": line}
+                # "  step 7/27  t=3.50s  1480.2 ms" 에서 진행률을 뽑는다.
+                m = re.search(r"step (\d+)/(\d+)", line)
+                if m:
+                    ev.update(type="progress", done=int(m.group(1)), total=int(m.group(2)))
+                yield _fb_sse(ev)
+            code = proc.wait()
+            yield _fb_sse({"type": "done", "ok": code == 0, "code": code})
+        except Exception as exc:
+            yield _fb_sse({"type": "done", "ok": False, "error": str(exc)})
+        finally:
+            if proc and proc.poll() is None:
+                proc.kill()
+            with _alpa_run_lock:
+                _alpa_running["path"] = None
+
+    return _fb_sse_response(gen())
 
 
 @app.route("/api/alpamayo/video")

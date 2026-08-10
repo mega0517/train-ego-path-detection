@@ -415,7 +415,24 @@
       display: flex; align-items: center; gap: 10px; flex-shrink: 0;
       background: #f2f5f7; border-radius: 8px; padding: 8px 10px; font-size: 13px;
     }
-    .alpa-bar .btn { margin-top: 0; width: auto; padding: 6px 12px; }
+    /* 재생 상태 토글. 맨 .btn은 배경이 정의돼 있지 않아 흰 글자가 밝은 바탕에
+       얹혀 흐리게 보였고, 재생/정지 두 버튼이 늘 같은 모습이라 지금 어느
+       상태인지도 읽히지 않았다. 하나로 합치고 상태에 따라 색과 글자를 바꾼다. */
+    .alpa-toggle {
+      margin-top: 0; width: auto; padding: 7px 16px; border: none;
+      border-radius: 6px; font-size: 13px; font-weight: 700; cursor: pointer;
+      color: #fff; background: #2e7d32; display: inline-flex;
+      align-items: center; gap: 7px; min-width: 116px; justify-content: center;
+    }
+    .alpa-toggle:hover { filter: brightness(1.12); }
+    .alpa-toggle.playing { background: #37474f; }
+    .alpa-toggle .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #9ccc65; flex-shrink: 0;
+    }
+    .alpa-toggle.playing .dot { background: #4fc3f7; animation: alpaPulse 1.1s infinite ease-in-out; }
+    @keyframes alpaPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    .alpa-toggle:disabled { background: #b0bec5; cursor: not-allowed; }
+    .alpa-toggle:disabled .dot { background: #eceff1; animation: none; }
     .alpa-list {
       display: flex; flex-direction: column; gap: 4px;
       max-height: 46vh; overflow-y: auto;
@@ -434,6 +451,18 @@
     .alpa-badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; flex-shrink: 0; }
     .alpa-badge.has { background: #2e7d32; color: #fff; }
     .alpa-badge.no { background: #cfd8dc; color: #546e7a; }
+    .alpa-res { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+    .alpa-bev { flex: 1; min-height: 0; width: 100%; background: #0b1114; border-radius: 6px; }
+    .alpa-metrics {
+      flex-shrink: 0; display: flex; gap: 14px; flex-wrap: wrap;
+      color: #cfd8dc; font-size: 13px; font-variant-numeric: tabular-nums;
+    }
+    .alpa-metrics b { color: #4fc3f7; font-weight: 700; }
+    .alpa-coc {
+      flex-shrink: 0; height: 26%; overflow-y: auto; background: #131b20;
+      border-radius: 6px; padding: 9px 11px; color: #eceff1;
+      font-size: 13px; line-height: 1.55; white-space: pre-wrap;
+    }
   </style>
   <script src="/static/marked.min.js"></script>
 </head>
@@ -841,6 +870,23 @@
         <h2>영상 목록</h2>
         <div class="alpa-list" id="alpaList"></div>
       </div>
+      <div class="card span2">
+        <h2>추론 실행</h2>
+        <div class="grid2">
+          <div>
+            <label>표본 fps</label>
+            <input type="number" id="alpaFps" value="2" min="0.2" step="0.2" />
+          </div>
+          <div>
+            <label>가정 속도 (m/s)</label>
+            <input type="number" id="alpaSpeed" value="14" min="1" step="1" />
+          </div>
+        </div>
+        <button class="btn run" id="alpaRun" disabled>선택 영상 추론</button>
+        <button class="btn run" id="alpaRunAll" style="background:#455a64;">미실행 전체 추론</button>
+        <div class="progress-wrap" id="alpaProgWrap"><div class="progress-bar" id="alpaProgBar"></div></div>
+        <div class="info" id="alpaRunInfo">영상을 고르면 실행할 수 있습니다.</div>
+      </div>
     </aside>
     <div class="main">
       <div class="alpa-players">
@@ -849,17 +895,22 @@
           <video id="alpaVidIn" controls preload="metadata"></video>
           <div class="alpa-empty" id="alpaNoIn">왼쪽에서 영상을 고르세요</div>
         </div>
-        <div class="alpa-pane">
-          <div class="alpa-cap">출력 (alpamayo)</div>
-          <video id="alpaVidOut" controls preload="metadata"></video>
-          <div class="alpa-empty" id="alpaNoOut">대응하는 출력 영상이 없습니다</div>
+        <div class="alpa-pane" id="alpaResPane">
+          <div class="alpa-cap">alpamayo 결과 — 예측 궤적 · 추론 · 지연</div>
+          <div class="alpa-res">
+            <canvas id="alpaBev" class="alpa-bev"></canvas>
+            <div class="alpa-metrics" id="alpaMetrics">—</div>
+            <div class="alpa-coc" id="alpaCoc">영상을 고르면 결과를 불러옵니다.</div>
+          </div>
+          <div class="alpa-empty" id="alpaNoOut">결과 파일이 없습니다</div>
         </div>
       </div>
       <div class="alpa-bar">
-        <label><input type="checkbox" id="alpaSync" checked /> 동기 재생</label>
-        <button class="btn" id="alpaPlay">▶ 함께 재생</button>
-        <button class="btn" id="alpaPause">⏸ 정지</button>
+        <button class="alpa-toggle" id="alpaToggle" disabled>
+          <span class="dot"></span><span id="alpaToggleTxt">영상 선택</span>
+        </button>
         <span id="alpaNow">0:00 / 0:00</span>
+        <span id="alpaStepInfo" style="color:#546e7a;"></span>
         <span id="alpaPick" style="margin-left:auto;color:#546e7a;"></span>
       </div>
     </div>
@@ -4710,13 +4761,15 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       $("trStatus").textContent = "Stopped";
     };
 
-    // ----- alpamayo: 입력·출력 영상 동시 보기 -----
+    // ----- alpamayo: 입력 영상 + 모델이 낸 결과 -----
+    // 모델은 영상을 만들지 않는다. 프레임마다 예측 궤적과 추론 문장, 소요 시간을
+    // 낼 뿐이라, 미리 돌려 둔 결과를 재생 위치에 맞춰 보여 준다.
     let alpaLoaded = false, alpaItems = [], alpaCur = -1;
-    const alpaSync = () => $("alpaSync").checked;
-    const alpaVids = () => [$("alpaVidIn"), $("alpaVidOut")];
+    let alpaDoc = null, alpaStep = -1;
 
     function alpaBoth(fn) {
-      alpaVids().forEach(v => { if (v && v.getAttribute("src")) { try { fn(v); } catch (e) {} } });
+      const v = $("alpaVidIn");
+      if (v && v.getAttribute("src")) { try { fn(v); } catch (e) {} }
     }
 
     function alpaFmt(t) {
@@ -4725,8 +4778,85 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       return m + ":" + String(s).padStart(2, "0");
     }
 
+    // 재생 상태는 native 컨트롤로도 바뀌므로 video 이벤트를 근거로 삼는다.
+    function alpaSetToggle(playing, enabled) {
+      const b = $("alpaToggle");
+      b.disabled = !enabled;
+      b.classList.toggle("playing", !!playing);
+      $("alpaToggleTxt").textContent =
+        !enabled ? "영상 선택" : (playing ? "재생 중 · 정지" : "재생");
+    }
+
+    async function alpaRunOne(it) {
+      const fd = new FormData();
+      fd.append("path", it.input);
+      fd.append("fps", $("alpaFps").value || "2");
+      fd.append("speed", $("alpaSpeed").value || "14");
+      $("alpaProgWrap").style.display = "block";
+      $("alpaProgBar").classList.add("indet");
+      $("alpaProgBar").style.width = "";
+      $("alpaRunInfo").textContent = `${it.name}: 모델 적재 중… (첫 실행은 30초쯤)`;
+      const res = await fetch("/api/alpamayo/run", { method: "POST", body: fd });
+      if (!res.ok) {
+        let d = `HTTP ${res.status}`;
+        try { d = (await res.json()).error || d; } catch (_) {}
+        $("alpaRunInfo").textContent = "실행 실패: " + d;
+        $("alpaProgWrap").style.display = "none";
+        return false;
+      }
+      const reader = res.body.getReader(), dec = new TextDecoder();
+      let buf = "", at = 0, ok = false;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n\n", at)) >= 0) {
+          const chunk = buf.slice(at, i).trim(); at = i + 2;
+          if (!chunk.startsWith("data:")) continue;
+          let m; try { m = JSON.parse(chunk.slice(5).trim()); } catch (_) { continue; }
+          if (m.type === "progress") {
+            $("alpaProgBar").classList.remove("indet");
+            $("alpaProgBar").style.width = (100 * m.done / m.total).toFixed(1) + "%";
+            $("alpaRunInfo").textContent = `${it.name}: ${m.done}/${m.total} 스텝`;
+          } else if (m.type === "log") {
+            if (/server ready|frames sampled/.test(m.line)) $("alpaRunInfo").textContent = it.name + ": " + m.line;
+          } else if (m.type === "done") {
+            ok = !!m.ok;
+            $("alpaRunInfo").textContent = it.name + (ok ? ": 완료" : ": 실패 " + (m.error || m.code));
+          }
+        }
+      }
+      $("alpaProgBar").classList.remove("indet");
+      $("alpaProgWrap").style.display = "none";
+      return ok;
+    }
+
+    async function alpaRunSelected(items) {
+      $("alpaRun").disabled = true; $("alpaRunAll").disabled = true;
+      try {
+        for (const it of items) {
+          const ok = await alpaRunOne(it);
+          if (!ok) break;
+        }
+        await alpaList();                       // 배지를 결과 있음으로 갱신
+        if (alpaCur >= 0 && alpaItems[alpaCur]) alpaPick(alpaCur);
+      } finally {
+        $("alpaRun").disabled = alpaCur < 0;
+        $("alpaRunAll").disabled = false;
+      }
+    }
+
     function alpaInit() {
       $("alpaLoad").onclick = alpaList;
+      $("alpaRun").onclick = () => {
+        if (alpaCur >= 0) alpaRunSelected([alpaItems[alpaCur]]);
+      };
+      $("alpaRunAll").onclick = () => {
+        const todo = alpaItems.filter(i => !i.results);
+        if (!todo.length) { $("alpaRunInfo").textContent = "미실행 영상이 없습니다."; return; }
+        alpaRunSelected(todo);
+      };
       // 폴더 선택은 추론 탭과 같은 모달 탐색기를 그대로 쓴다. 고르는 즉시
       // pickServerFolder가 onchange를 부르므로 목록이 따라 갱신된다.
       $("alpaBrowseIn").onclick = () =>
@@ -4735,23 +4865,92 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         openBrowseModal($("alpaOut").value.trim(), "alpaOut", "출력 영상 폴더 선택");
       $("alpaIn").onchange = alpaList;
       $("alpaOut").onchange = alpaList;
-      $("alpaPlay").onclick = () => alpaBoth(v => v.play());
-      $("alpaPause").onclick = () => alpaBoth(v => v.pause());
-      const vin = $("alpaVidIn"), vout = $("alpaVidOut");
-      // 동기는 한 방향으로만 건다. 서로 맞추면 두 영상이 계속 서로를 되감는다.
-      vin.addEventListener("play", () => { if (alpaSync()) vout.play().catch(() => {}); });
-      vin.addEventListener("pause", () => { if (alpaSync()) vout.pause(); });
-      vin.addEventListener("seeked", () => { if (alpaSync()) vout.currentTime = vin.currentTime; });
+      const vin = $("alpaVidIn");
+      $("alpaToggle").onclick = () => { vin.paused ? vin.play() : vin.pause(); };
+      vin.addEventListener("play", () => alpaSetToggle(true, true));
+      vin.addEventListener("pause", () => alpaSetToggle(false, true));
+      vin.addEventListener("ended", () => alpaSetToggle(false, true));
       vin.addEventListener("timeupdate", () => {
         $("alpaNow").textContent = alpaFmt(vin.currentTime) + " / " + alpaFmt(vin.duration);
-        // 0.35초는 재생 중 자연히 벌어지는 차이보다 크고 눈에 띄기 전이라,
-        // 매 프레임 되감지 않으면서 어긋남은 잡는다.
-        if (alpaSync() && vout.getAttribute("src") &&
-            Math.abs(vout.currentTime - vin.currentTime) > 0.35) {
-          vout.currentTime = vin.currentTime;
-        }
+        alpaShowAt(vin.currentTime);
       });
+      vin.addEventListener("seeked", () => alpaShowAt(vin.currentTime));
       alpaList();
+    }
+
+    // 재생 위치에 가장 가까운 스텝을 찾아 그린다. 추론은 초당 1~2회뿐이라
+    // 프레임마다 결과가 있지 않다.
+    function alpaShowAt(t) {
+      if (!alpaDoc || !alpaDoc.steps.length) return;
+      let best = 0, bd = Infinity;
+      alpaDoc.steps.forEach((s, i) => {
+        const d = Math.abs((s.time || 0) - t);
+        if (d < bd) { bd = d; best = i; }
+      });
+      if (best === alpaStep) return;
+      alpaStep = best;
+      const s = alpaDoc.steps[best];
+      $("alpaStepInfo").textContent =
+        `스텝 ${best + 1}/${alpaDoc.steps.length} · t=${(s.time || 0).toFixed(2)}s`;
+      if (!s.ok) {
+        $("alpaMetrics").innerHTML = "<b>실패</b>";
+        $("alpaCoc").textContent = s.error || "(오류)";
+        alpaDrawBev(null);
+        return;
+      }
+      const pts = s.pred_xyz || [];
+      const fwd = pts.length ? (pts[pts.length - 1][0] - pts[0][0]) : 0;
+      $("alpaMetrics").innerHTML =
+        `추론 <b>${s.infer_ms != null ? s.infer_ms.toFixed(0) : "-"} ms</b>` +
+        ` · 궤적 <b>${pts.length}</b>점` +
+        ` · 전방 변위 <b>${fwd.toFixed(1)} m</b>`;
+      $("alpaCoc").textContent = s.coc || "(추론 문장 없음)";
+      alpaDrawBev(pts);
+    }
+
+    // 예측 궤적 조감도. 자차가 아래 가운데, x는 전방(위), y는 좌측이다.
+    function alpaDrawBev(pts) {
+      const c = $("alpaBev");
+      const r = c.getBoundingClientRect();
+      if (c.width !== Math.round(r.width) || c.height !== Math.round(r.height)) {
+        c.width = Math.round(r.width); c.height = Math.round(r.height);
+      }
+      const g = c.getContext("2d"), W = c.width, H = c.height;
+      g.clearRect(0, 0, W, H);
+      g.fillStyle = "#0b1114"; g.fillRect(0, 0, W, H);
+      if (!pts || !pts.length) return;
+      const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+      const maxX = Math.max(10, ...xs), spanY = Math.max(6, ...ys.map(Math.abs)) * 2 + 4;
+      const pad = 24;
+      const sx = (H - 2 * pad) / maxX;            // 전방 거리 -> 세로
+      const sy = (W - 2 * pad) / spanY;           // 좌우 -> 가로
+      const s = Math.min(sx, sy);
+      const ox = W / 2, oy = H - pad;             // 자차 위치
+      // 눈금: 10 m 간격 가로선
+      g.strokeStyle = "#22303a"; g.lineWidth = 1; g.font = "11px sans-serif";
+      g.fillStyle = "#4a5b66";
+      for (let m = 10; m <= maxX; m += 10) {
+        const y = oy - m * s;
+        g.beginPath(); g.moveTo(pad, y); g.lineTo(W - pad, y); g.stroke();
+        g.fillText(m + " m", 4, y - 2);
+      }
+      g.strokeStyle = "#22303a";
+      g.beginPath(); g.moveTo(ox, pad); g.lineTo(ox, oy); g.stroke();
+      // 궤적
+      g.strokeStyle = "#4fc3f7"; g.lineWidth = 3; g.lineJoin = "round";
+      g.beginPath();
+      pts.forEach((p, i) => {
+        const X = ox - p[1] * s, Y = oy - p[0] * s;
+        i ? g.lineTo(X, Y) : g.moveTo(X, Y);
+      });
+      g.stroke();
+      g.fillStyle = "#9ccc65";
+      pts.forEach(p => {
+        g.beginPath(); g.arc(ox - p[1] * s, oy - p[0] * s, 2.5, 0, 6.284); g.fill();
+      });
+      // 자차
+      g.fillStyle = "#e53935";
+      g.beginPath(); g.arc(ox, oy, 5, 0, 6.284); g.fill();
     }
 
     async function alpaList() {
@@ -4792,32 +4991,48 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         nm.className = "nm";
         nm.textContent = it.name;                 // 파일명은 텍스트로만 — HTML로 넣지 않는다
         const bd = document.createElement("span");
-        bd.className = "alpa-badge " + (it.output ? "has" : "no");
-        bd.textContent = it.output ? "출력" : "없음";
+        bd.className = "alpa-badge " + (it.results ? "has" : "no");
+        bd.textContent = it.results ? "결과" : "미실행";
         el.appendChild(nm); el.appendChild(bd);
         el.onclick = () => alpaPick(i);
         box.appendChild(el);
       });
     }
 
-    function alpaPick(i) {
+    async function alpaPick(i) {
       const it = alpaItems[i];
       if (!it) return;
       alpaCur = i;
-      const url = p => "/api/alpamayo/video?path=" + encodeURIComponent(p);
-      const vin = $("alpaVidIn"), vout = $("alpaVidOut");
-      vin.src = url(it.input);
+      $("alpaVidIn").src = "/api/alpamayo/video?path=" + encodeURIComponent(it.input);
       $("alpaNoIn").style.display = "none";
-      if (it.output) {
-        vout.src = url(it.output);
-        $("alpaNoOut").style.display = "none";
-      } else {
-        vout.removeAttribute("src");
-        vout.load();
-        $("alpaNoOut").style.display = "flex";
-      }
+      alpaSetToggle(false, true);
+      $("alpaRun").disabled = false;
       $("alpaPick").textContent = it.name;
       alpaRender();
+      // 결과 불러오기
+      alpaDoc = null; alpaStep = -1;
+      $("alpaStepInfo").textContent = "";
+      alpaDrawBev(null);
+      try {
+        const r = await fetch("/api/alpamayo/results?path=" + encodeURIComponent(it.input));
+        const d = await r.json();
+        if (!d.ok) {
+          $("alpaNoOut").style.display = "flex";
+          $("alpaMetrics").innerHTML = "—";
+          $("alpaCoc").textContent =
+            "결과가 없습니다. 다음으로 만들 수 있습니다.\n\n" +
+            "python tools/alpamayo_run.py " + it.input + " --fps 2 --gpu 2";
+          return;
+        }
+        alpaDoc = d.doc;
+        $("alpaNoOut").style.display = "none";
+        $("alpaCoc").textContent =
+          `${alpaDoc.n_steps}개 스텝 · ${alpaDoc.sample_fps} fps 표본 · ` +
+          `가정 속도 ${alpaDoc.assumed_speed_mps} m/s\n재생하면 위치에 맞춰 표시됩니다.`;
+        alpaShowAt($("alpaVidIn").currentTime || 0);
+      } catch (e) {
+        $("alpaCoc").textContent = "결과 요청 실패: " + e;
+      }
     }
 
     loadInfo();
