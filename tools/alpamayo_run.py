@@ -98,7 +98,7 @@ class Server:
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=resolve_gpu(gpu))
         cmd = [os.path.join(root, ".venv", "bin", "python"),
                os.path.join(root, "isaac_bridge", "alpamayo_server.py"),
-               "--alpamayo-root", root, "--model", model, "--attn", "eager"]
+               "--alpamayo-root", root, "--model", model, "--attn", "sdpa"]
         self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=None, text=True, bufsize=1, env=env)
         # The readiness banner only appears once the weights are on the GPU,
@@ -142,6 +142,10 @@ def main():
     ap.add_argument("--model", default="nvidia/Alpamayo-R1-10B")
     ap.add_argument("--root", default=ALPA_ROOT)
     ap.add_argument("--limit", type=int, default=0, help="stop after N steps (0 = all)")
+    ap.add_argument("--diffusion-steps", type=int, default=5,
+                    help="euler steps for the trajectory sampler (default 5; the "
+                         "model's own default of 10 costs 220 ms more per request "
+                         "and moves the path by 0.18 m)")
     ap.add_argument("--history", default=None,
                     help="JSON file with a real ego history (T,3); overrides --speed")
     args = ap.parse_args()
@@ -168,7 +172,8 @@ def main():
         window = frames[i:i + N_FRAMES]
         resp = srv.infer({"images": [p for p, _ in window],
                           "ego_history_xyz": hist,
-                          "num_traj_samples": 1, "temperature": 0.6})
+                          "num_traj_samples": 1, "temperature": 0.6,
+                          "diffusion_steps": args.diffusion_steps})
         rec = {"step": i, "time": window[-1][1], "ok": bool(resp.get("ok"))}
         if resp.get("ok"):
             rec.update(pred_xyz=resp["pred_xyz"], coc=resp.get("coc"),
@@ -182,6 +187,7 @@ def main():
 
     doc = {"video": os.path.abspath(args.video), "sample_fps": args.fps,
            "source_fps": src_fps, "assumed_speed_mps": args.speed,
+           "attn": "sdpa", "diffusion_steps": args.diffusion_steps,
            "history": hist, "n_steps": len(steps),
            "wall_s": round(time.time() - t_start, 1), "steps": steps}
     with open(out, "w", encoding="utf-8") as f:
