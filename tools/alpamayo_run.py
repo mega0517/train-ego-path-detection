@@ -110,6 +110,15 @@ def straight_history(speed_mps):
     return [[-(N_HISTORY - 1 - i) * d, 0.0, 0.0] for i in range(N_HISTORY)]
 
 
+def rig_result(path):
+    """True if this result came from the 4-camera runner, which is worth more."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return bool(json.load(f).get("rig"))
+    except (OSError, ValueError):
+        return False
+
+
 def resolve_gpu(spec):
     """Turn a physical GPU index into its UUID; pass UUIDs through unchanged.
 
@@ -186,6 +195,8 @@ def main():
                     help="single video only; default: <video>.alpamayo.json")
     ap.add_argument("--skip-existing", action="store_true",
                     help="leave videos that already have a result file alone")
+    ap.add_argument("--force", action="store_true",
+                    help="overwrite even a result written by alpamayo_clip_run.py")
     ap.add_argument("--fps", type=float, default=2.0, help="sampling rate (default 2)")
     ap.add_argument("--vehicle", choices=sorted(VEHICLE_SPEEDS), default=None,
                     help="assume this vehicle's speed: "
@@ -221,6 +232,14 @@ def main():
         out = args.out or (os.path.splitext(video)[0] + ".alpamayo.json")
         if args.skip_existing and os.path.exists(out):
             print(f"skip {os.path.basename(video)} — {os.path.basename(out)} exists")
+            continue
+        if os.path.exists(out) and not args.force and rig_result(out):
+            # A rig result took real cameras and a recorded history and lands
+            # within about a metre of ground truth. This runner would replace it
+            # with a straight line off a guessed speed, and the file looks the
+            # same either way. One was lost that way already.
+            print(f"refusing {os.path.basename(video)} — {os.path.basename(out)} "
+                  f"came from the 4-camera runner; --force to overwrite")
             continue
         todo.append((video, out))
     if not todo:
