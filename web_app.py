@@ -4564,6 +4564,11 @@ def api_alpamayo_run():
     fps = request.form.get("fps", "2")
     speed = request.form.get("speed", "14")
     gpu = request.form.get("gpu", "2")
+    # 차량 프로파일이 오면 속도는 러너가 정한다. 이름을 그대로 넘기지 않고
+    # 목록에 대조하는 이유는, 이 값이 곧 자식 프로세스의 인자가 되기 때문이다.
+    vehicle = request.form.get("vehicle") or ""
+    if vehicle and vehicle not in ("car", "car-city", "train", "tram"):
+        return jsonify({"ok": False, "error": f"알 수 없는 차량 프로파일: {vehicle}"}), 400
 
     with _alpa_run_lock:
         if _alpa_running["path"]:
@@ -4573,7 +4578,8 @@ def api_alpamayo_run():
 
     def gen():
         cmd = [sys.executable, os.path.join(BASE_PATH, "tools", "alpamayo_run.py"),
-               src, "--fps", str(fps), "--speed", str(speed), "--gpu", str(gpu)]
+               src, "--fps", str(fps), "--gpu", str(gpu)]
+        cmd += ["--vehicle", vehicle] if vehicle else ["--speed", str(speed)]
         yield _fb_sse({"type": "start", "name": os.path.basename(src), "cmd": " ".join(cmd)})
         proc = None
         try:

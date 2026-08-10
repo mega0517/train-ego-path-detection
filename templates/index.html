@@ -878,9 +878,19 @@
             <input type="number" id="alpaFps" value="2" min="0.2" step="0.2" />
           </div>
           <div>
-            <label>가정 속도 (m/s)</label>
-            <input type="number" id="alpaSpeed" value="14" min="1" step="1" />
+            <label>차량 프로파일</label>
+            <select id="alpaVehicle" title="합성 주행 이력의 속도를 정합니다">
+              <option value="car">자동차 · 개활 도로 (25 m/s)</option>
+              <option value="car-city">자동차 · 도심 (11 m/s)</option>
+              <option value="train" selected>열차 (14 m/s)</option>
+              <option value="tram">트램 (8 m/s)</option>
+              <option value="">직접 입력</option>
+            </select>
           </div>
+        </div>
+        <div style="margin-top:8px;">
+          <label>가정 속도 (m/s)</label>
+          <input type="number" id="alpaSpeed" value="14" min="1" step="1" />
         </div>
         <button class="btn run" id="alpaRun" disabled>선택 영상 추론</button>
         <button class="btn run" id="alpaRunAll" style="background:#455a64;">미실행 전체 추론</button>
@@ -4791,7 +4801,11 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       const fd = new FormData();
       fd.append("path", it.input);
       fd.append("fps", $("alpaFps").value || "2");
-      fd.append("speed", $("alpaSpeed").value || "14");
+      // 프로파일을 고른 상태면 속도는 러너가 정하게 둔다. 둘 다 보내면 러너가
+      // --speed를 우선하므로 결과 파일에 프로파일 이름이 남지 않는다.
+      const veh = $("alpaVehicle").value;
+      if (veh) fd.append("vehicle", veh);
+      else fd.append("speed", $("alpaSpeed").value || "14");
       $("alpaProgWrap").style.display = "block";
       $("alpaProgBar").classList.add("indet");
       $("alpaProgBar").style.width = "";
@@ -4847,8 +4861,25 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       }
     }
 
+    // 러너의 VEHICLE_SPEEDS와 같은 값. 여기 숫자는 표시용이고, 실제 속도는
+    // 프로파일 이름을 받은 러너가 정한다 — 두 곳이 어긋나도 결과는 러너를 따른다.
+    const ALPA_VEHICLE_SPEED = { car: 25, "car-city": 11, train: 14, tram: 8 };
+
     function alpaInit() {
       $("alpaLoad").onclick = alpaList;
+      $("alpaVehicle").onchange = () => {
+        const v = ALPA_VEHICLE_SPEED[$("alpaVehicle").value];
+        if (v) $("alpaSpeed").value = v;
+        $("alpaSpeed").disabled = !!v;
+      };
+      // 직접 입력한 값이 어느 프로파일과 같아지면 그 프로파일로 되돌린다.
+      $("alpaSpeed").onchange = () => {
+        const v = parseFloat($("alpaSpeed").value);
+        const hit = Object.keys(ALPA_VEHICLE_SPEED)
+          .find(k => ALPA_VEHICLE_SPEED[k] === v);
+        $("alpaVehicle").value = hit || "";
+      };
+      $("alpaSpeed").disabled = true;      // 기본값이 열차 프로파일이므로
       $("alpaRun").onclick = () => {
         if (alpaCur >= 0) alpaRunSelected([alpaItems[alpaCur]]);
       };
@@ -5028,7 +5059,9 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         $("alpaNoOut").style.display = "none";
         $("alpaCoc").textContent =
           `${alpaDoc.n_steps}개 스텝 · ${alpaDoc.sample_fps} fps 표본 · ` +
-          `가정 속도 ${alpaDoc.assumed_speed_mps} m/s\n재생하면 위치에 맞춰 표시됩니다.`;
+          `가정 속도 ${alpaDoc.assumed_speed_mps} m/s` +
+          (alpaDoc.vehicle ? ` (${alpaDoc.vehicle})` : "") +
+          `\n재생하면 위치에 맞춰 표시됩니다.`;
         alpaShowAt($("alpaVidIn").currentTime || 0);
       } catch (e) {
         $("alpaCoc").textContent = "결과 요청 실패: " + e;

@@ -12,8 +12,12 @@ does not say how the vehicle was moving, and the alternative -- estimating it
 from the footage -- would put a second model's error inside this one's input.
 Where a real trajectory log exists, pass it with --history.
 
+Several videos in one invocation share a server, which matters on short clips:
+loading the weights takes about as long as inferring over a 15 s clip.
+
 Usage:
     python tools/alpamayo_run.py clip.mp4 --out clip.alpamayo.json --fps 2
+    python tools/alpamayo_run.py dir/*.mp4 --skip-existing
 """
 import argparse
 import json
@@ -53,6 +57,18 @@ def sample_frames(video, fps, out_dir):
 
 
 HISTORY_HZ = 10.0     # the server's own self-test spaces history at 1.4 m for 14 m/s
+
+# The assumed speed is not a detail: the synthesised history is a straight line,
+# so whatever speed goes in comes back out as the length of the predicted path.
+# Running every clip at the self-test's 14 m/s put a tram's pace on a motorway.
+# These are the speeds each kind of vehicle actually travels at, not a tuning
+# knob -- pick the one that matches the footage, or pass --speed outright.
+VEHICLE_SPEEDS = {
+    "car": 25.0,        # 90 km/h, open road
+    "car-city": 11.0,   # 40 km/h, urban streets and slow going in rain or snow
+    "train": 14.0,      # 50 km/h, the value every clip used before
+    "tram": 8.0,        # 30 km/h, street running
+}
 
 
 def straight_history(speed_mps):
@@ -133,11 +149,18 @@ class Server:
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("video")
-    ap.add_argument("--out", default=None, help="default: <video>.alpamayo.json")
+    ap.add_argument("videos", nargs="+")
+    ap.add_argument("--out", default=None,
+                    help="single video only; default: <video>.alpamayo.json")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="leave videos that already have a result file alone")
     ap.add_argument("--fps", type=float, default=2.0, help="sampling rate (default 2)")
-    ap.add_argument("--speed", type=float, default=14.0,
-                    help="assumed constant speed in m/s (default 14, about 50 km/h)")
+    ap.add_argument("--vehicle", choices=sorted(VEHICLE_SPEEDS), default=None,
+                    help="assume this vehicle's speed: "
+                         + ", ".join(f"{k}={v:g} m/s" for k, v in VEHICLE_SPEEDS.items()))
+    ap.add_argument("--speed", type=float, default=None,
+                    help="assumed constant speed in m/s; overrides --vehicle "
+                         "(default 14, about 50 km/h)")
     ap.add_argument("--gpu", default="2")
     ap.add_argument("--model", default="nvidia/Alpamayo-R1-10B")
     ap.add_argument("--root", default=ALPA_ROOT)
@@ -150,49 +173,75 @@ def main():
                     help="JSON file with a real ego history (T,3); overrides --speed")
     args = ap.parse_args()
 
-    out = args.out or (os.path.splitext(args.video)[0] + ".alpamayo.json")
-    tmp = tempfile.mkdtemp(prefix="alpamayo_frames_")
-    frames, src_fps = sample_frames(args.video, args.fps, tmp)
-    if len(frames) < N_FRAMES:
-        raise SystemExit(f"need at least {N_FRAMES} sampled frames, got {len(frames)}")
+    if args.out and len(args.videos) > 1:
+        raise SystemExit("--out names one file; drop it to write <video>.alpamayo.json")
 
+    speed = (args.speed if args.speed is not None
+             else VEHICLE_SPEEDS.get(args.vehicle, 14.0))
     hist = (json.load(open(args.history)) if args.history
-            else straight_history(args.speed))
+            else straight_history(speed))
+    if not args.history:
+        label = args.vehicle or "default"
+        print(f"assuming {speed:g} m/s ({speed * 3.6:.0f} km/h, {label})")
 
-    print(f"{len(frames)} frames sampled at {args.fps} fps (source {src_fps:.1f} fps)")
+    todo = []
+    for video in args.videos:
+        out = args.out or (os.path.splitext(video)[0] + ".alpamayo.json")
+        if args.skip_existing and os.path.exists(out):
+            print(f"skip {os.path.basename(video)} — {os.path.basename(out)} exists")
+            continue
+        todo.append((video, out))
+    if not todo:
+        return
+
+    # One server for the whole list. Loading the weights costs about 20 s, and
+    # paying that per video is most of the wall clock on short clips.
     print(f"starting server on GPU {args.gpu} — a cold model cache takes minutes")
     srv = Server(args.gpu, args.model, args.root)
     print("server ready")
 
-    steps, t_start = [], time.time()
-    total = len(frames) - N_FRAMES + 1
-    if args.limit:
-        total = min(total, args.limit)
-    for i in range(total):
-        window = frames[i:i + N_FRAMES]
-        resp = srv.infer({"images": [p for p, _ in window],
-                          "ego_history_xyz": hist,
-                          "num_traj_samples": 1, "temperature": 0.6,
-                          "diffusion_steps": args.diffusion_steps})
-        rec = {"step": i, "time": window[-1][1], "ok": bool(resp.get("ok"))}
-        if resp.get("ok"):
-            rec.update(pred_xyz=resp["pred_xyz"], coc=resp.get("coc"),
-                       infer_ms=resp.get("infer_ms"))
-        else:
-            rec["error"] = resp.get("error")
-        steps.append(rec)
-        print(f"  step {i + 1}/{total}  t={rec['time']:.2f}s  "
-              f"{resp.get('infer_ms', '-')} ms", flush=True)
-    srv.close()
+    try:
+        for n, (video, out) in enumerate(todo, 1):
+            print(f"\n[{n}/{len(todo)}] {os.path.basename(video)}", flush=True)
+            tmp = tempfile.mkdtemp(prefix="alpamayo_frames_")
+            frames, src_fps = sample_frames(video, args.fps, tmp)
+            if len(frames) < N_FRAMES:
+                print(f"  skipped: need {N_FRAMES} sampled frames, got {len(frames)}")
+                continue
+            print(f"{len(frames)} frames sampled at {args.fps} fps "
+                  f"(source {src_fps:.1f} fps)")
 
-    doc = {"video": os.path.abspath(args.video), "sample_fps": args.fps,
-           "source_fps": src_fps, "assumed_speed_mps": args.speed,
-           "attn": "sdpa", "diffusion_steps": args.diffusion_steps,
-           "history": hist, "n_steps": len(steps),
-           "wall_s": round(time.time() - t_start, 1), "steps": steps}
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(doc, f, ensure_ascii=False)
-    print(f"wrote {out}  ({len(steps)} steps, {doc['wall_s']}s)")
+            steps, t_start = [], time.time()
+            total = len(frames) - N_FRAMES + 1
+            if args.limit:
+                total = min(total, args.limit)
+            for i in range(total):
+                window = frames[i:i + N_FRAMES]
+                resp = srv.infer({"images": [p for p, _ in window],
+                                  "ego_history_xyz": hist,
+                                  "num_traj_samples": 1, "temperature": 0.6,
+                                  "diffusion_steps": args.diffusion_steps})
+                rec = {"step": i, "time": window[-1][1], "ok": bool(resp.get("ok"))}
+                if resp.get("ok"):
+                    rec.update(pred_xyz=resp["pred_xyz"], coc=resp.get("coc"),
+                               infer_ms=resp.get("infer_ms"))
+                else:
+                    rec["error"] = resp.get("error")
+                steps.append(rec)
+                print(f"  step {i + 1}/{total}  t={rec['time']:.2f}s  "
+                      f"{resp.get('infer_ms', '-')} ms", flush=True)
+
+            doc = {"video": os.path.abspath(video), "sample_fps": args.fps,
+                   "source_fps": src_fps, "assumed_speed_mps": speed,
+                   "vehicle": args.vehicle,
+                   "attn": "sdpa", "diffusion_steps": args.diffusion_steps,
+                   "history": hist, "n_steps": len(steps),
+                   "wall_s": round(time.time() - t_start, 1), "steps": steps}
+            with open(out, "w", encoding="utf-8") as f:
+                json.dump(doc, f, ensure_ascii=False)
+            print(f"wrote {out}  ({len(steps)} steps, {doc['wall_s']}s)")
+    finally:
+        srv.close()
 
 
 if __name__ == "__main__":
