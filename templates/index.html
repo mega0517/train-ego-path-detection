@@ -468,6 +468,7 @@
       border-radius: 4px; margin: 6px 0; padding: 7px 10px;
       color: #f5deb8; font-size: 12px; line-height: 1.5;
     }
+    .alpa-warn.ok { background: #14301f; border-left-color: #3f9e5c; color: #cdebd6; }
   </style>
   <script src="/static/marked.min.js"></script>
 </head>
@@ -916,11 +917,8 @@
             <canvas id="alpaBev" class="alpa-bev"></canvas>
             <!-- 궤적을 크게 그려 두면 그것이 이 화면의 결론처럼 보인다. 실제로는
                  단안 영상에서 늘 직선이고 길이는 가정 속도 × 6.4초일 뿐이다. -->
-            <div class="alpa-warn">
-              궤적은 참고용이 아닙니다. 이 모델은 카메라 4대를 기하적으로 읽는데
-              단안 영상으로는 채울 수 없어, 예측 경로가 장면과 무관하게 항상
-              직선(길이 = 가정 속도 × 6.4초)으로 나옵니다. 아래 추론 텍스트만
-              장면을 반영합니다.
+            <div class="alpa-warn" id="alpaWarn">
+              영상을 고르면 그 결과를 믿어도 되는지 여기에 표시됩니다.
             </div>
             <div class="alpa-metrics" id="alpaMetrics">—</div>
             <div class="alpa-coc" id="alpaCoc">영상을 고르면 결과를 불러옵니다.</div>
@@ -4947,13 +4945,54 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       $("alpaMetrics").innerHTML =
         `추론 <b>${s.infer_ms != null ? s.infer_ms.toFixed(0) : "-"} ms</b>` +
         ` · 궤적 <b>${pts.length}</b>점` +
-        ` · 전방 변위 <b>${fwd.toFixed(1)} m</b>`;
+        ` · 전방 변위 <b>${fwd.toFixed(1)} m</b>` +
+        // 정답이 있는 것은 PhysicalAI-AV 클립뿐이다. 있으면 오차가 가장 중요한
+        // 숫자이므로 앞의 것들과 같은 줄에 둔다. 종/횡을 나누는 이유는, 경로는
+        // 맞고 속도만 틀린 경우가 흔한데 합친 숫자만으로는 구분이 안 되기 때문이다.
+        (s.min_ade != null
+          ? ` · 정답과의 오차 <b>${s.min_ade.toFixed(2)} m</b>` + alpaErrSplit(s)
+          : "");
       $("alpaCoc").textContent = s.coc || "(추론 문장 없음)";
-      alpaDrawBev(pts);
+      alpaDrawBev(pts, s.gt_xyz || null);
+    }
+
+    // 오차를 진행 방향과 좌우로 나눈다. 경로는 맞고 속도만 틀린 경우 합친
+    // 숫자는 커도 횡 성분은 0에 가깝다 -- 그 둘은 전혀 다른 실패다.
+    function alpaErrSplit(s) {
+      const p = s.pred_xyz, q = s.gt_xyz;
+      if (!p || !q || !p.length || p.length !== q.length) return "";
+      let dx = 0, dy = 0;
+      for (let i = 0; i < p.length; i++) {
+        dx += Math.abs(p[i][0] - q[i][0]);
+        dy += Math.abs(p[i][1] - q[i][1]);
+      }
+      return ` <span style="opacity:.75">(종 ${(dx / p.length).toFixed(1)}` +
+             ` · 횡 ${(dy / p.length).toFixed(1)})</span>`;
+    }
+
+    // 궤적을 믿어도 되는지는 결과마다 다르다. 카메라 4대와 실제 주행 이력으로
+    // 돌린 것은 정답 대비 오차가 1 m 남짓이고, 단안 대시캠으로 돌린 것은 장면과
+    // 무관한 직선이다. 같은 화면에 같은 모양으로 그려지므로 여기서 구분해 준다.
+    function alpaSetTrustNote(doc) {
+      const el = $("alpaWarn");
+      if (!el) return;
+      if (doc && doc.rig) {
+        el.className = "alpa-warn ok";
+        el.textContent =
+          "카메라 " + doc.rig + "와 실제 주행 이력으로 돌린 결과입니다. " +
+          "궤적을 그대로 읽으셔도 됩니다. 주황 점선이 차량이 실제로 간 경로입니다.";
+      } else {
+        el.className = "alpa-warn";
+        el.textContent =
+          "궤적은 참고용이 아닙니다. 이 모델은 카메라 4대를 기하적으로 읽는데 " +
+          "단안 영상으로는 채울 수 없어, 예측 경로가 장면과 무관하게 항상 " +
+          "직선(길이 = 가정 속도 × 6.4초)으로 나옵니다. 아래 추론 텍스트만 " +
+          "장면을 반영합니다.";
+      }
     }
 
     // 예측 궤적 조감도. 자차가 아래 가운데, x는 전방(위), y는 좌측이다.
-    function alpaDrawBev(pts) {
+    function alpaDrawBev(pts, gt) {
       const c = $("alpaBev");
       const r = c.getBoundingClientRect();
       if (c.width !== Math.round(r.width) || c.height !== Math.round(r.height)) {
@@ -4963,7 +5002,10 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       g.clearRect(0, 0, W, H);
       g.fillStyle = "#0b1114"; g.fillRect(0, 0, W, H);
       if (!pts || !pts.length) return;
-      const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+      // 정답이 예측보다 크게 휘는 경우가 있어, 축척은 둘을 함께 보고 정한다.
+      // 예측만 보고 맞추면 정답이 화면 밖으로 잘려 오차가 작아 보인다.
+      const all = gt && gt.length ? pts.concat(gt) : pts;
+      const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
       const maxX = Math.max(10, ...xs), spanY = Math.max(6, ...ys.map(Math.abs)) * 2 + 4;
       const pad = 24;
       const sx = (H - 2 * pad) / maxX;            // 전방 거리 -> 세로
@@ -4988,6 +5030,30 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         i ? g.lineTo(X, Y) : g.moveTo(X, Y);
       });
       g.stroke();
+      // 정답은 예측 위에 점선으로 얹는다. 밑에 깔면 오차가 종방향일 때 -- 경로는
+      // 맞고 속도만 틀린 흔한 경우 -- 굵은 예측선에 완전히 덮여 안 보인다.
+      // 끝점을 함께 찍어야 길이 차이가 드러난다.
+      if (gt && gt.length) {
+        g.strokeStyle = "#ffb74d"; g.lineWidth = 2; g.setLineDash([5, 4]);
+        g.beginPath();
+        gt.forEach((p, i) => {
+          const X = ox - p[1] * s, Y = oy - p[0] * s;
+          i ? g.lineTo(X, Y) : g.moveTo(X, Y);
+        });
+        g.stroke();
+        g.setLineDash([]);
+        const end = (p, col) => {
+          g.fillStyle = col;
+          g.beginPath();
+          g.arc(ox - p[1] * s, oy - p[0] * s, 5, 0, 6.284);
+          g.fill();
+        };
+        end(pts[pts.length - 1], "#4fc3f7");
+        end(gt[gt.length - 1], "#ffb74d");
+        g.font = "11px sans-serif";
+        g.fillStyle = "#4fc3f7"; g.fillText("예측", W - 70, pad + 12);
+        g.fillStyle = "#ffb74d"; g.fillText("실제 주행", W - 70, pad + 26);
+      }
       g.fillStyle = "#9ccc65";
       pts.forEach(p => {
         g.beginPath(); g.arc(ox - p[1] * s, oy - p[0] * s, 2.5, 0, 6.284); g.fill();
@@ -5070,10 +5136,15 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         }
         alpaDoc = d.doc;
         $("alpaNoOut").style.display = "none";
-        $("alpaCoc").textContent =
-          `${alpaDoc.n_steps}개 스텝 · ${alpaDoc.sample_fps} fps 표본 · ` +
-          `가정 속도 ${alpaDoc.assumed_speed_mps} m/s` +
-          (alpaDoc.vehicle ? ` (${alpaDoc.vehicle})` : "") +
+        alpaSetTrustNote(alpaDoc);
+        $("alpaCoc").textContent = (alpaDoc.rig
+          ? `${alpaDoc.n_steps}개 스텝 · ${alpaDoc.sample_fps} fps · ` +
+            `카메라 ${alpaDoc.rig} · 실제 주행 이력` +
+            (alpaDoc.median_min_ade != null
+              ? ` · 오차 중앙값 ${alpaDoc.median_min_ade.toFixed(2)} m` : "")
+          : `${alpaDoc.n_steps}개 스텝 · ${alpaDoc.sample_fps} fps 표본 · ` +
+            `가정 속도 ${alpaDoc.assumed_speed_mps} m/s` +
+            (alpaDoc.vehicle ? ` (${alpaDoc.vehicle})` : "")) +
           `\n재생하면 위치에 맞춰 표시됩니다.`;
         alpaShowAt($("alpaVidIn").currentTime || 0);
       } catch (e) {
