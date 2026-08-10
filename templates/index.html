@@ -392,6 +392,48 @@
       #fbOverlay .fb-zoom #fbNavPos { min-width: 46px; font-size: 12px; }
       #fbOverlay .body { padding: 8px; }
     }
+
+    /* ---- alpamayo: 입력·출력 영상 나란히 ---- */
+    .alpa-players { display: flex; gap: 10px; flex: 1; min-height: 0; }
+    .alpa-pane {
+      flex: 1; min-width: 0; display: flex; flex-direction: column;
+      background: #10161a; border-radius: 8px; overflow: hidden; position: relative;
+    }
+    .alpa-cap {
+      padding: 6px 10px; font-size: 13px; font-weight: 700;
+      color: #cfd8dc; background: #1b262c; flex-shrink: 0;
+    }
+    .alpa-pane video {
+      flex: 1; min-height: 0; width: 100%; background: #000; object-fit: contain;
+    }
+    .alpa-empty {
+      position: absolute; inset: 30px 0 0 0; display: flex;
+      align-items: center; justify-content: center;
+      color: #78909c; font-size: 14px; pointer-events: none;
+    }
+    .alpa-bar {
+      display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+      background: #f2f5f7; border-radius: 8px; padding: 8px 10px; font-size: 13px;
+    }
+    .alpa-bar .btn { margin-top: 0; width: auto; padding: 6px 12px; }
+    .alpa-list {
+      display: flex; flex-direction: column; gap: 4px;
+      max-height: 46vh; overflow-y: auto;
+    }
+    .alpa-item {
+      display: flex; align-items: center; gap: 6px; padding: 7px 9px;
+      cursor: pointer; border: 1px solid #cfd8dc; border-radius: 6px;
+      background: #fff; font-size: 13px;
+    }
+    .alpa-item:hover { background: #eceff1; }
+    .alpa-item.active { border-color: #00838f; background: #e0f2f1; font-weight: 700; }
+    .alpa-item .nm {
+      flex: 1; min-width: 0; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+    }
+    .alpa-badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; flex-shrink: 0; }
+    .alpa-badge.has { background: #2e7d32; color: #fff; }
+    .alpa-badge.no { background: #cfd8dc; color: #546e7a; }
   </style>
   <script src="/static/marked.min.js"></script>
 </head>
@@ -409,6 +451,7 @@
       <button class="tab" id="tabFiles">파일 File Browser</button>
       <button class="tab" id="tabSwitch">🚆 분기기 Switch</button>
       <button class="tab" id="tabGhRepo">🐙 Laurent 원본</button>
+      <button class="tab" id="tabAlpa">🎥 alpamayo</button>
       <a class="tab" href="/recorder" target="_blank" style="text-decoration:none;">🎬 녹화</a>
     </span>
     <span class="status" id="deviceStatus">…</span>
@@ -773,6 +816,51 @@
           <button class="close" id="ghPickClose">✕</button>
         </div>
         <div class="list" id="ghPickList"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout" id="pageAlpa" style="display:none;">
+    <aside class="sidebar">
+      <div class="card span2">
+        <h2>입력 영상 선택</h2>
+        <label>입력 폴더 (서버 경로)</label>
+        <div class="grid2">
+          <input type="text" id="alpaIn" placeholder="탐색으로 선택하거나 직접 입력" />
+          <button class="btn" id="alpaBrowseIn" style="margin-top:0;background:#455a64;">서버 탐색…</button>
+        </div>
+        <label style="margin-top:8px;">출력 폴더 (비우면 입력 폴더에서 찾음)</label>
+        <div class="grid2">
+          <input type="text" id="alpaOut" placeholder="탐색으로 선택하거나 직접 입력" />
+          <button class="btn" id="alpaBrowseOut" style="margin-top:0;background:#455a64;">서버 탐색…</button>
+        </div>
+        <button class="btn" id="alpaLoad">목록 불러오기</button>
+        <div class="info" id="alpaHint">폴더를 지정하고 목록을 불러오세요.</div>
+      </div>
+      <div class="card span2">
+        <h2>영상 목록</h2>
+        <div class="alpa-list" id="alpaList"></div>
+      </div>
+    </aside>
+    <div class="main">
+      <div class="alpa-players">
+        <div class="alpa-pane">
+          <div class="alpa-cap">입력 (Input)</div>
+          <video id="alpaVidIn" controls preload="metadata"></video>
+          <div class="alpa-empty" id="alpaNoIn">왼쪽에서 영상을 고르세요</div>
+        </div>
+        <div class="alpa-pane">
+          <div class="alpa-cap">출력 (alpamayo)</div>
+          <video id="alpaVidOut" controls preload="metadata"></video>
+          <div class="alpa-empty" id="alpaNoOut">대응하는 출력 영상이 없습니다</div>
+        </div>
+      </div>
+      <div class="alpa-bar">
+        <label><input type="checkbox" id="alpaSync" checked /> 동기 재생</label>
+        <button class="btn" id="alpaPlay">▶ 함께 재생</button>
+        <button class="btn" id="alpaPause">⏸ 정지</button>
+        <span id="alpaNow">0:00 / 0:00</span>
+        <span id="alpaPick" style="margin-left:auto;color:#546e7a;"></span>
       </div>
     </div>
   </div>
@@ -1276,7 +1364,9 @@
         const p = document.createElement("span");
         p.className = "br-path"; p.textContent = d.path; p.title = d.path;
         const use = document.createElement("button");
-        use.className = "br-use"; use.textContent = `Use this (${d.images})`;
+        use.className = "br-use";
+        use.textContent = d.images || !d.videos
+          ? `Use this (${d.images})` : `Use this (영상 ${d.videos})`;
         use.onclick = () => pickServerFolder(d.path, targetId, browserId);
         head.appendChild(p); head.appendChild(use); b.appendChild(head);
         if (d.parent) {
@@ -1302,9 +1392,11 @@
           } else if (dir.images && dir.dirs) {
             cnt = `${dir.images} imgs · ${dir.dirs}개 폴더`;
           }
+          // 영상만 든 폴더는 이미지 수가 0이라 위 문구만으로는 빈 폴더로 읽힌다.
+          if (dir.videos) cnt = (dir.images || dir.dirs ? cnt + " · " : "") + `영상 ${dir.videos}`;
           it.innerHTML = `<span>📁 ${dir.name}</span><span class="br-cnt">${cnt}</span>`;
           it.onclick = () => openBrowse(dir.path, targetId, browserId);
-          if (dir.images > 0) {
+          if (dir.images > 0 || dir.videos > 0) {
             const pick = document.createElement("span");
             pick.className = "br-pick"; pick.textContent = "✓ use";
             pick.onclick = (ev) => { ev.stopPropagation(); pickServerFolder(dir.path, targetId, browserId); };
@@ -1769,14 +1861,17 @@
     // ----- Tabs -----
     let trainOptionsLoaded = false;
     function showPage(which) {
-      const pages = { infer: "pageInfer", label: "pageLabel", train: "pageTrain", files: "pageFiles", switch: "pageSwitch", ghrepo: "pageGhRepo" };
-      const tabs = { infer: "tabInfer", label: "tabLabel", train: "tabTrain", files: "tabFiles", switch: "tabSwitch", ghrepo: "tabGhRepo" };
+      const pages = { infer: "pageInfer", label: "pageLabel", train: "pageTrain", files: "pageFiles", switch: "pageSwitch", ghrepo: "pageGhRepo", alpa: "pageAlpa" };
+      const tabs = { infer: "tabInfer", label: "tabLabel", train: "tabTrain", files: "tabFiles", switch: "tabSwitch", ghrepo: "tabGhRepo", alpa: "tabAlpa" };
       Object.entries(pages).forEach(([k, id]) => { $(id).style.display = k === which ? "flex" : "none"; });
       Object.entries(tabs).forEach(([k, id]) => { $(id).classList.toggle("active", k === which); });
       if (which === "train" && !trainOptionsLoaded) { loadTrainOptions(); trainOptionsLoaded = true; }
       if (which === "files" && !fbLoaded) { fbInit(); fbLoaded = true; }
       if (which === "switch" && !swLoaded) { swInit(); swLoaded = true; }
       if (which === "ghrepo" && !ghLoaded) { ghInit(); ghLoaded = true; }
+      if (which === "alpa" && !alpaLoaded) { alpaInit(); alpaLoaded = true; }
+      // 다른 탭으로 나가면 영상을 멈춘다. 소리와 디코딩이 뒤에서 계속 돌지 않도록.
+      if (which !== "alpa" && alpaLoaded) alpaBoth(v => v.pause());
       // 검수 큐는 라벨링 탭에 들어오면 바로 필요하므로 자동으로 읽는다. 한 번만
       // 하는 이유는 ✓ 표시를 매번 되돌리지 않기 위해서다 — 다시 읽어야 하면
       // "검수 큐 불러오기"가 그대로 있다.
@@ -1791,6 +1886,7 @@
     $("tabFiles").onclick = () => showPage("files");
     $("tabSwitch").onclick = () => showPage("switch");
     $("tabGhRepo").onclick = () => showPage("ghrepo");
+    $("tabAlpa").onclick = () => showPage("alpa");
 
     // ----- 분기기 Switch 이미지 갤러리 -----
     let lblReviewLoaded = false;
@@ -4613,6 +4709,116 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       setTrainBusy(false);
       $("trStatus").textContent = "Stopped";
     };
+
+    // ----- alpamayo: 입력·출력 영상 동시 보기 -----
+    let alpaLoaded = false, alpaItems = [], alpaCur = -1;
+    const alpaSync = () => $("alpaSync").checked;
+    const alpaVids = () => [$("alpaVidIn"), $("alpaVidOut")];
+
+    function alpaBoth(fn) {
+      alpaVids().forEach(v => { if (v && v.getAttribute("src")) { try { fn(v); } catch (e) {} } });
+    }
+
+    function alpaFmt(t) {
+      if (!isFinite(t) || t < 0) return "0:00";
+      const m = Math.floor(t / 60), s = Math.floor(t % 60);
+      return m + ":" + String(s).padStart(2, "0");
+    }
+
+    function alpaInit() {
+      $("alpaLoad").onclick = alpaList;
+      // 폴더 선택은 추론 탭과 같은 모달 탐색기를 그대로 쓴다. 고르는 즉시
+      // pickServerFolder가 onchange를 부르므로 목록이 따라 갱신된다.
+      $("alpaBrowseIn").onclick = () =>
+        openBrowseModal($("alpaIn").value.trim(), "alpaIn", "입력 영상 폴더 선택");
+      $("alpaBrowseOut").onclick = () =>
+        openBrowseModal($("alpaOut").value.trim(), "alpaOut", "출력 영상 폴더 선택");
+      $("alpaIn").onchange = alpaList;
+      $("alpaOut").onchange = alpaList;
+      $("alpaPlay").onclick = () => alpaBoth(v => v.play());
+      $("alpaPause").onclick = () => alpaBoth(v => v.pause());
+      const vin = $("alpaVidIn"), vout = $("alpaVidOut");
+      // 동기는 한 방향으로만 건다. 서로 맞추면 두 영상이 계속 서로를 되감는다.
+      vin.addEventListener("play", () => { if (alpaSync()) vout.play().catch(() => {}); });
+      vin.addEventListener("pause", () => { if (alpaSync()) vout.pause(); });
+      vin.addEventListener("seeked", () => { if (alpaSync()) vout.currentTime = vin.currentTime; });
+      vin.addEventListener("timeupdate", () => {
+        $("alpaNow").textContent = alpaFmt(vin.currentTime) + " / " + alpaFmt(vin.duration);
+        // 0.35초는 재생 중 자연히 벌어지는 차이보다 크고 눈에 띄기 전이라,
+        // 매 프레임 되감지 않으면서 어긋남은 잡는다.
+        if (alpaSync() && vout.getAttribute("src") &&
+            Math.abs(vout.currentTime - vin.currentTime) > 0.35) {
+          vout.currentTime = vin.currentTime;
+        }
+      });
+      alpaList();
+    }
+
+    async function alpaList() {
+      const q = new URLSearchParams({
+        in: $("alpaIn").value.trim(), out: $("alpaOut").value.trim(),
+      });
+      $("alpaHint").textContent = "불러오는 중…";
+      try {
+        const r = await fetch("/api/alpamayo/list?" + q);
+        const d = await r.json();
+        if (!d.ok) {
+          $("alpaHint").textContent = d.error || "목록을 읽지 못했습니다.";
+          $("alpaList").innerHTML = "";
+          alpaItems = []; return;
+        }
+        alpaItems = d.items;
+        alpaCur = -1;
+        if (!$("alpaIn").value.trim()) $("alpaIn").value = d.in_dir;
+        const withOut = d.items.filter(i => i.output).length;
+        $("alpaHint").textContent = `영상 ${d.count}개 · 출력 있음 ${withOut}개`;
+        alpaRender();
+      } catch (e) {
+        $("alpaHint").textContent = "요청 실패: " + e;
+      }
+    }
+
+    function alpaRender() {
+      const box = $("alpaList");
+      box.innerHTML = "";
+      if (!alpaItems.length) {
+        box.innerHTML = '<div class="info">이 폴더에 영상이 없습니다.</div>';
+        return;
+      }
+      alpaItems.forEach((it, i) => {
+        const el = document.createElement("div");
+        el.className = "alpa-item" + (i === alpaCur ? " active" : "");
+        const nm = document.createElement("span");
+        nm.className = "nm";
+        nm.textContent = it.name;                 // 파일명은 텍스트로만 — HTML로 넣지 않는다
+        const bd = document.createElement("span");
+        bd.className = "alpa-badge " + (it.output ? "has" : "no");
+        bd.textContent = it.output ? "출력" : "없음";
+        el.appendChild(nm); el.appendChild(bd);
+        el.onclick = () => alpaPick(i);
+        box.appendChild(el);
+      });
+    }
+
+    function alpaPick(i) {
+      const it = alpaItems[i];
+      if (!it) return;
+      alpaCur = i;
+      const url = p => "/api/alpamayo/video?path=" + encodeURIComponent(p);
+      const vin = $("alpaVidIn"), vout = $("alpaVidOut");
+      vin.src = url(it.input);
+      $("alpaNoIn").style.display = "none";
+      if (it.output) {
+        vout.src = url(it.output);
+        $("alpaNoOut").style.display = "none";
+      } else {
+        vout.removeAttribute("src");
+        vout.load();
+        $("alpaNoOut").style.display = "flex";
+      }
+      $("alpaPick").textContent = it.name;
+      alpaRender();
+    }
 
     loadInfo();
   </script>

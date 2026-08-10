@@ -1286,10 +1286,27 @@ def api_switch_ethumb(event, frame):
         return send_file(p)
 
 
+_VIDEO_EXT = (".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi")
+
+
+def _count_videos(folder):
+    """폴더 안 영상 파일 수. 폴더가 아니면 0.
+
+    탐색기가 이미지 수만 세면 영상 폴더가 전부 '0 imgs'로 보여서, 고를 수 있는
+    폴더인지 아닌지 화면만 봐서는 알 수 없다.
+    """
+    try:
+        with os.scandir(folder) as it:
+            return sum(1 for e in it
+                       if e.is_file() and e.name.lower().endswith(_VIDEO_EXT))
+    except OSError:
+        return 0
+
+
 @app.route("/api/browse")
 def api_browse():
-    """List subfolders (with image counts) for a server-side folder browser,
-    clamped within WEB_BROWSE_ROOT so callers can't escape it."""
+    """List subfolders (with image and video counts) for a server-side folder
+    browser, clamped within WEB_BROWSE_ROOT so callers can't escape it."""
     root = os.path.realpath(_BROWSE_ROOT)
     req = (request.args.get("path") or "").strip()
     cur = os.path.realpath(req) if req else root
@@ -1320,6 +1337,7 @@ def api_browse():
                 except OSError:
                     pass
                 dirs.append({"name": name, "path": full, "images": sub_imgs,
+                             "videos": _count_videos(full),
                              "dirs": sub_dirs,
                              # images seen in the probed subfolders; ">=" when
                              # there are more subfolders than we looked at
@@ -1337,6 +1355,7 @@ def api_browse():
     return jsonify({
         "ok": True, "path": cur, "parent": parent, "root": root,
         "dirs": dirs, "files": files, "images": len(list_folder_images(cur) or []),
+        "videos": _count_videos(cur),
     })
 
 
@@ -4428,6 +4447,90 @@ def api_ghrepo_detect_batch_stop():
     with _gh_batch_lock:
         _gh_detect_batch["cancel"] = True
     return jsonify({"ok": True})
+
+
+# ------------------------------------------------------------------ alpamayo
+# 입력 영상과 그 영상을 alpamayo로 처리한 출력 영상을 나란히 놓고 보는 탭.
+
+_ALPA_IN_DEFAULT = os.environ.get(
+    "WEB_ALPA_IN", os.path.join(_UPLOAD_ROOT, "alpamayo", "in"))
+_ALPA_OUT_DEFAULT = os.environ.get(
+    "WEB_ALPA_OUT", os.path.join(_UPLOAD_ROOT, "alpamayo", "out"))
+
+
+def _alpa_videos(folder):
+    """폴더 안 영상 파일 이름을 정렬해 돌려준다. 폴더가 아니면 None."""
+    if not folder or not os.path.isdir(folder):
+        return None
+    return sorted(n for n in os.listdir(folder)
+                  if n.lower().endswith(_VIDEO_EXT)
+                  and os.path.isfile(os.path.join(folder, n)))
+
+
+def _alpa_match_output(stem, out_dir, in_dir):
+    """입력 이름에 대응하는 출력 영상 경로. 없으면 None.
+
+    출력 폴더에 같은 이름이 있으면 그것을 쓰고, 없으면 접미사가 붙은 이름을
+    찾는다. 규칙을 하나로 고정하지 않는 이유는 출력을 만드는 도구마다 이름
+    관례가 달라서다. 같은 폴더를 볼 때는 접미사가 없는 후보를 건너뛴다 —
+    그러면 입력 자신이 출력으로 잡힌다.
+    """
+    for d in (out_dir, in_dir):
+        if not d or not os.path.isdir(d):
+            continue
+        for suf in ("", "_out", "_pred", "_result", "_alpamayo"):
+            if d == in_dir and not suf:
+                continue
+            for ext in _VIDEO_EXT:
+                p = os.path.join(d, stem + suf + ext)
+                if os.path.isfile(p):
+                    return p
+    return None
+
+
+@app.route("/api/alpamayo/list")
+def api_alpamayo_list():
+    """입력 폴더의 영상 목록과 항목별 출력 영상 유무."""
+    in_arg = (request.args.get("in") or "").strip() or _ALPA_IN_DEFAULT
+    out_arg = (request.args.get("out") or "").strip() or _ALPA_OUT_DEFAULT
+    in_dir = _under_data_root(in_arg)
+    out_dir = _under_data_root(out_arg)
+    if in_dir is None:
+        return jsonify({"ok": False,
+                        "error": f"데이터 루트({_UPLOAD_ROOT}) 밖의 경로입니다: {in_arg}"}), 400
+    names = _alpa_videos(in_dir)
+    if names is None:
+        return jsonify({"ok": False, "error": f"폴더가 없습니다: {in_dir}"}), 400
+    items = []
+    for n in names:
+        src = os.path.join(in_dir, n)
+        items.append({
+            "name": n,
+            "input": src,
+            "output": _alpa_match_output(os.path.splitext(n)[0], out_dir, in_dir),
+            "size": os.path.getsize(src),
+        })
+    # 출력이 입력과 같은 폴더에 있으면 그 출력 파일 자신도 영상이라 입력 목록에
+    # 잡힌다. 이미 누군가의 출력으로 쓰인 파일은 입력에서 뺀다.
+    used = {it["output"] for it in items if it["output"]}
+    items = [it for it in items if it["input"] not in used]
+    return jsonify({"ok": True, "in_dir": in_dir, "out_dir": out_dir,
+                    "count": len(items), "items": items})
+
+
+@app.route("/api/alpamayo/video")
+def api_alpamayo_video():
+    """영상 한 편을 흘려보낸다.
+
+    conditional=True라야 Range 요청에 응답하고, 그래야 브라우저가 탐색(seek)과
+    동기 재생을 할 수 있다. 이것이 없으면 재생은 되지만 위치 이동이 막힌다.
+    """
+    src = _under_data_root(request.args.get("path"))
+    if src is None or not os.path.isfile(src):
+        return jsonify({"ok": False, "error": "영상을 찾을 수 없습니다."}), 404
+    if not src.lower().endswith(_VIDEO_EXT):
+        return jsonify({"ok": False, "error": "영상 파일이 아닙니다."}), 400
+    return send_file(src, conditional=True)
 
 
 def main():
