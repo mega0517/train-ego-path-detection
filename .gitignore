@@ -38,3 +38,11 @@ web_app.log
 # Bundled runtime binaries (e.g. unrar for the File Browser tab) — fetched per-host
 bin/
 overlay_clean_web.log
+
+# 발표자료 빌더가 남기는 pptx 압축 해제 작업물 (adapt_layout / fix_boxes / layout_catalog)
+_adapt/
+_fixboxes/
+krri_unpacked/
+*.orig_bak
+# 호스트별 디스크 사용량 메모
+.disk_root.txt
