@@ -4553,9 +4553,32 @@ _alpa_run_lock = threading.Lock()
 _alpa_running = {"path": None, "proc": None, "stopped": False}
 
 
+# PhysicalAI-AV 클립을 돌리는 러너는 데이터셋 킷과 모델을 직접 적재하므로
+# alpamayo 쪽 venv에서 돌아야 한다. 프로젝트 venv에는 그 패키지들이 없다.
+ALPA_PY = os.environ.get(
+    "ALPAMAYO_PYTHON", "/data3/bhkim/workspace/alpamayo/.venv/bin/python")
+
+
+def _alpa_prior_result(video):
+    """이 영상의 기존 결과 문서. 없거나 깨졌으면 빈 dict."""
+    out = os.path.splitext(video)[0] + ".alpamayo.json"
+    try:
+        with open(out, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 @app.route("/api/alpamayo/run", methods=["POST"])
 def api_alpamayo_run():
-    """tools/alpamayo_run.py를 돌려 결과 JSON을 만들고 진행률을 흘려보낸다.
+    """추론을 돌려 결과 JSON을 만들고 진행률을 흘려보낸다.
+
+    러너는 둘이고, 영상이 어디서 왔느냐로 갈린다. PhysicalAI-AV 클립은 카메라
+    4대와 기록된 주행 이력이 있으므로 alpamayo_clip_run.py로 돌려야 궤적이
+    쓸 만하게 나온다. 그것을 단안 러너로 다시 돌리면 정답 대비 1 m짜리 궤적이
+    가정 속도로 그린 직선이 된다 -- 재추론이 결과를 망가뜨리는 셈이라, 어느
+    러너를 쓸지는 사용자가 아니라 기존 결과가 정한다.
 
     한 번에 하나만 돌린다. 10B 모델이 GPU에 두 벌 올라가면 그 카드에서 돌던
     다른 작업까지 같이 죽는다.
@@ -4575,6 +4598,16 @@ def api_alpamayo_run():
     # 결과를 덮어쓰지 않으려고 거절하므로, 그 거절을 넘기려면 명시가 필요하다.
     force = request.form.get("force") in ("1", "true", "on")
 
+    prior = _alpa_prior_result(src)
+    clip_id = prior.get("clip_id") if prior.get("rig") else None
+    try:
+        samples = max(1, min(16, int(request.form.get("samples") or 1)))
+    except ValueError:
+        samples = 1
+    if prior.get("rig") and not clip_id:
+        return jsonify({"ok": False, "error": "4카메라 결과인데 clip_id가 없어 "
+                                              "다시 돌릴 수 없습니다."}), 400
+
     with _alpa_run_lock:
         if _alpa_running["path"]:
             return jsonify({"ok": False,
@@ -4582,12 +4615,18 @@ def api_alpamayo_run():
         _alpa_running.update(path=src, proc=None, stopped=False)
 
     def gen():
-        cmd = [sys.executable, os.path.join(BASE_PATH, "tools", "alpamayo_run.py"),
-               src, "--fps", str(fps), "--gpu", str(gpu)]
-        cmd += ["--vehicle", vehicle] if vehicle else ["--speed", str(speed)]
-        if force:
-            cmd.append("--force")
-        yield _fb_sse({"type": "start", "name": os.path.basename(src), "cmd": " ".join(cmd)})
+        if clip_id:
+            cmd = [ALPA_PY, os.path.join(BASE_PATH, "tools", "alpamayo_clip_run.py"),
+                   clip_id, "--out-dir", os.path.dirname(src),
+                   "--fps", str(fps), "--gpu", str(gpu), "--samples", str(samples)]
+        else:
+            cmd = [sys.executable, os.path.join(BASE_PATH, "tools", "alpamayo_run.py"),
+                   src, "--fps", str(fps), "--gpu", str(gpu)]
+            cmd += ["--vehicle", vehicle] if vehicle else ["--speed", str(speed)]
+            if force:
+                cmd.append("--force")
+        yield _fb_sse({"type": "start", "name": os.path.basename(src),
+                       "rig": bool(clip_id), "cmd": " ".join(cmd)})
         proc = None
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,

@@ -107,7 +107,19 @@ def main():
     ap.add_argument("--diffusion-steps", type=int, default=5)
     ap.add_argument("--limit", type=int, default=0, help="stop after N steps (0 = all)")
     ap.add_argument("--skip-existing", action="store_true")
+    # Card 2 by standing instruction. Card 0 goes in and out of MIG and its
+    # 1g.10gb slices cannot hold the model; card 1 carries other people's work.
+    ap.add_argument("--gpu", default="2",
+                    help="physical GPU index or UUID (default 2)")
     args = ap.parse_args()
+
+    # Before torch is imported, and by UUID: one card on this host has had MIG
+    # enabled, and once any card is split the numeric ordering stops matching
+    # nvidia-smi's. alpamayo_run holds the lookup; its module-level imports are
+    # all stdlib, so borrowing it here costs nothing.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from alpamayo_run import resolve_gpu
+    os.environ["CUDA_VISIBLE_DEVICES"] = resolve_gpu(args.gpu)
 
     import numpy as np
     import physical_ai_av

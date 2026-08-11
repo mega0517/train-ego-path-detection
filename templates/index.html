@@ -894,10 +894,18 @@
             </select>
           </div>
         </div>
-        <div style="margin-top:8px;">
-          <label>가정 속도 (m/s)</label>
-          <input type="number" id="alpaSpeed" value="14" min="1" step="1" />
+        <div class="grid2" style="margin-top:8px;">
+          <div>
+            <label>가정 속도 (m/s)</label>
+            <input type="number" id="alpaSpeed" value="14" min="1" step="1" />
+          </div>
+          <div>
+            <label>표본 수 (4카메라)</label>
+            <input type="number" id="alpaSamples" value="1" min="1" max="16" step="1"
+                   title="궤적을 몇 개 뽑아 정답에 가장 가까운 것을 고를지. 공개 지표는 6개 기준입니다." />
+          </div>
         </div>
+        <div class="info" id="alpaOptNote" style="margin-top:4px;"></div>
         <button class="btn run" id="alpaRun" disabled>선택 영상 추론</button>
         <button class="btn stop" id="alpaStop" disabled>중지</button>
         <button class="btn run" id="alpaRunAll" style="background:#455a64;">미실행 전체 추론</button>
@@ -4819,6 +4827,9 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       const veh = $("alpaVehicle").value;
       if (veh) fd.append("vehicle", veh);
       else fd.append("speed", $("alpaSpeed").value || "14");
+      // 4카메라 러너로 갈 때만 쓰이지만, 어느 러너로 갈지는 서버가 기존 결과를
+      // 보고 정하므로 여기서는 늘 실어 보낸다.
+      fd.append("samples", $("alpaSamples").value || "1");
       $("alpaProgWrap").style.display = "block";
       $("alpaProgBar").classList.add("indet");
       $("alpaProgBar").style.width = "";
@@ -4881,12 +4892,23 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       }
     }
 
-    // 이미 결과가 있는 영상을 다시 돌리는 것은 덮어쓰기다. 버튼이 그렇게 말해야
-    // 누르기 전에 알 수 있다.
+    // 버튼이 무엇을 할지 미리 말해야 한다. 다시 돌리는 것은 덮어쓰기이고,
+    // 4카메라 결과는 같은 4카메라 러너로 다시 돌아가므로 궤적이 그대로 살아
+    // 있다 -- 단안으로 떨어지지 않는다는 것을 버튼에서 알 수 있어야 한다.
     function alpaSyncRunLabel() {
       const b = $("alpaRun");
       const it = alpaCur >= 0 ? alpaItems[alpaCur] : null;
-      b.textContent = it && it.results ? "다시 추론 (덮어쓰기)" : "선택 영상 추론";
+      const rig = !!(alpaDoc && alpaDoc.rig);
+      b.textContent = !it || !it.results ? "선택 영상 추론"
+                    : rig ? "다시 추론 (4카메라)" : "다시 추론 (덮어쓰기)";
+      // 주행 이력이 기록으로 들어오는 리그 클립에서는 가정 속도가 쓰이지 않는다.
+      const off = rig;
+      $("alpaVehicle").disabled = off;
+      $("alpaSpeed").disabled = off || !!$("alpaVehicle").value;
+      $("alpaSamples").disabled = !rig;
+      $("alpaOptNote").textContent = rig
+        ? "4카메라 클립입니다. 주행 이력이 기록으로 들어와 가정 속도는 쓰이지 않습니다."
+        : "표본 수는 4카메라 클립에만 적용됩니다.";
     }
 
     // 러너의 VEHICLE_SPEEDS와 같은 값. 여기 숫자는 표시용이고, 실제 속도는
@@ -4911,15 +4933,10 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
       $("alpaRun").onclick = () => {
         if (alpaCur < 0) return;
         const it = alpaItems[alpaCur];
-        const force = !!it.results;
-        // 4카메라 결과를 대시캠 설정으로 덮어쓰면 정답 대비 1 m짜리 궤적이
-        // 가정 속도로 그린 직선으로 바뀐다. 되돌리려면 다시 돌리는 수밖에 없다.
-        if (force && alpaDoc && alpaDoc.rig &&
-            !confirm(it.name + " 은 카메라 " + alpaDoc.rig + " 결과입니다.\n\n" +
-                     "여기서 다시 돌리면 단안 설정으로 덮어써져 궤적을 쓸 수 " +
-                     "없게 됩니다. 되돌리려면 tools/alpamayo_clip_run.py 로 " +
-                     "다시 만들어야 합니다.\n\n진행할까요?")) return;
-        alpaRunSelected([it], force);
+        // 4카메라 결과는 서버가 같은 4카메라 러너로 돌려주므로 경고할 것이 없다.
+        // 단안 결과를 다시 돌리는 것도 같은 러너라 손실이 없다. 어느 쪽이든
+        // 덮어쓰기이므로 force는 늘 보낸다.
+        alpaRunSelected([it], !!it.results);
       };
       $("alpaStop").onclick = async () => {
         $("alpaStop").disabled = true;
@@ -5168,6 +5185,7 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         const d = await r.json();
         if (!d.ok) {
           $("alpaNoOut").style.display = "flex";
+          alpaSyncRunLabel();             // 결과 없음도 상태다
           $("alpaMetrics").innerHTML = "—";
           $("alpaCoc").textContent =
             "결과가 없습니다. 다음으로 만들 수 있습니다.\n\n" +
@@ -5177,6 +5195,9 @@ function fbRefreshBoth() { fbLoad("L"); fbLoad("R"); }
         alpaDoc = d.doc;
         $("alpaNoOut").style.display = "none";
         alpaSetTrustNote(alpaDoc);
+        // 결과를 받은 뒤에 다시 부른다. 고를 때 한 번 부르는 것만으로는 그 시점에
+        // alpaDoc이 아직 직전 영상 것이라, 단안 클립에 4카메라 안내가 붙었다.
+        alpaSyncRunLabel();
         $("alpaCoc").textContent = (alpaDoc.rig
           ? `${alpaDoc.n_steps}개 스텝 · ${alpaDoc.sample_fps} fps · ` +
             `카메라 ${alpaDoc.rig} · 실제 주행 이력` +

@@ -122,24 +122,41 @@ def rig_result(path):
 def resolve_gpu(spec):
     """Turn a physical GPU index into its UUID; pass UUIDs through unchanged.
 
-    One of the cards on this host has MIG enabled, and once any card is split
-    the numeric CUDA_VISIBLE_DEVICES ordering stops matching nvidia-smi's. Asking
-    for "2" landed a run on a 1g.10gb slice of card 0, which died out of memory
+    Cards on this host go in and out of MIG, and once one is split the numeric
+    CUDA_VISIBLE_DEVICES ordering stops matching nvidia-smi's. Asking for "2"
+    landed a run on a 1g.10gb slice of card 0, which died out of memory
     part-way through loading. UUIDs are unambiguous.
+
+    A split card is refused rather than resolved. nvidia-smi still reports it as
+    one 80 GB device with almost nothing in use, so it looks like the emptiest
+    card on the host, but handing CUDA the parent UUID gets you one 9.5 GB slice
+    and a torch traceback thirty frames deep. The model needs about 20 GB.
     """
     spec = str(spec)
     if spec.startswith(("GPU-", "MIG-")):
-        return spec
+        return spec                       # asked for a specific device, MIG or not
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=index,uuid",
+        out = subprocess.run(["nvidia-smi", "--query-gpu=index,uuid,mig.mode.current",
                               "--format=csv,noheader"],
                              capture_output=True, text=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         return spec                       # no nvidia-smi: leave it to CUDA
+    rows = []
     for line in out.splitlines():
-        idx, _, uuid = line.partition(",")
-        if idx.strip() == spec:
-            return uuid.strip()
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 3:
+            rows.append(parts[:3])        # index, uuid, mig mode
+    whole = [idx for idx, _, mig in rows if mig != "Enabled"]
+    for idx, uuid, mig in rows:
+        if idx != spec:
+            continue
+        if mig == "Enabled":
+            raise SystemExit(
+                f"GPU {spec} has MIG enabled; its slices are far smaller than the "
+                f"~20 GB this model needs. Whole cards here: "
+                f"{', '.join(whole) or 'none'}. Pass a MIG- UUID to use a slice "
+                f"anyway.")
+        return uuid
     raise SystemExit(f"no GPU with index {spec}")
 
 
