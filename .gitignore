@@ -46,3 +46,4 @@ krri_unpacked/
 *.orig_bak
 # 호스트별 디스크 사용량 메모
 .disk_root.txt
+figures/ieie_fit/
