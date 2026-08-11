@@ -4548,7 +4548,9 @@ def api_alpamayo_results():
 
 
 _alpa_run_lock = threading.Lock()
-_alpa_running = {"path": None}
+# proc은 중지 요청이 죽일 대상이다. 스트림을 닫는 것만으로도 finally가 돌지만,
+# 브라우저가 SSE 연결을 실제로 끊기까지 시간이 걸려 그동안 GPU를 물고 있다.
+_alpa_running = {"path": None, "proc": None, "stopped": False}
 
 
 @app.route("/api/alpamayo/run", methods=["POST"])
@@ -4569,22 +4571,29 @@ def api_alpamayo_run():
     vehicle = request.form.get("vehicle") or ""
     if vehicle and vehicle not in ("car", "car-city", "train", "tram"):
         return jsonify({"ok": False, "error": f"알 수 없는 차량 프로파일: {vehicle}"}), 400
+    # 이미 결과가 있는 영상을 다른 설정으로 다시 돌리는 경우. 러너는 4카메라
+    # 결과를 덮어쓰지 않으려고 거절하므로, 그 거절을 넘기려면 명시가 필요하다.
+    force = request.form.get("force") in ("1", "true", "on")
 
     with _alpa_run_lock:
         if _alpa_running["path"]:
             return jsonify({"ok": False,
                             "error": f"이미 실행 중입니다: {os.path.basename(_alpa_running['path'])}"}), 409
-        _alpa_running["path"] = src
+        _alpa_running.update(path=src, proc=None, stopped=False)
 
     def gen():
         cmd = [sys.executable, os.path.join(BASE_PATH, "tools", "alpamayo_run.py"),
                src, "--fps", str(fps), "--gpu", str(gpu)]
         cmd += ["--vehicle", vehicle] if vehicle else ["--speed", str(speed)]
+        if force:
+            cmd.append("--force")
         yield _fb_sse({"type": "start", "name": os.path.basename(src), "cmd": " ".join(cmd)})
         proc = None
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, bufsize=1)
+            with _alpa_run_lock:
+                _alpa_running["proc"] = proc
             for line in proc.stdout:
                 line = line.rstrip()
                 if not line:
@@ -4596,16 +4605,43 @@ def api_alpamayo_run():
                     ev.update(type="progress", done=int(m.group(1)), total=int(m.group(2)))
                 yield _fb_sse(ev)
             code = proc.wait()
-            yield _fb_sse({"type": "done", "ok": code == 0, "code": code})
+            # 사용자가 멈춘 것을 실패로 보고하면 안 된다. 죽은 자식 프로세스는
+            # 어느 쪽이든 0이 아닌 코드를 내므로 의도였는지는 여기서만 안다.
+            if _alpa_running.get("stopped"):
+                yield _fb_sse({"type": "done", "ok": False, "stopped": True,
+                               "code": code})
+            else:
+                yield _fb_sse({"type": "done", "ok": code == 0, "code": code})
         except Exception as exc:
             yield _fb_sse({"type": "done", "ok": False, "error": str(exc)})
         finally:
             if proc and proc.poll() is None:
                 proc.kill()
             with _alpa_run_lock:
-                _alpa_running["path"] = None
+                _alpa_running.update(path=None, proc=None)
 
     return _fb_sse_response(gen())
+
+
+@app.route("/api/alpamayo/stop", methods=["POST"])
+def api_alpamayo_stop():
+    """진행 중인 추론을 멈춘다.
+
+    terminate 후 잠깐 기다렸다 kill한다. 러너는 자식으로 10B 모델 서버를 띄우고
+    있어서, 곧바로 kill하면 그 서버가 부모 없이 남아 GPU 20 GB를 계속 물고 있다.
+    """
+    with _alpa_run_lock:
+        proc, path = _alpa_running.get("proc"), _alpa_running.get("path")
+        if not path:
+            return jsonify({"ok": False, "error": "실행 중인 추론이 없습니다."}), 409
+        _alpa_running["stopped"] = True
+    if proc and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    return jsonify({"ok": True, "stopped": os.path.basename(path)})
 
 
 @app.route("/api/alpamayo/video")
