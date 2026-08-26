@@ -1,7 +1,49 @@
 weights/
+# Keep the egopathrnn model checkpoint (tracked via git-lfs)
+!egopathrnn/weights/
+!egopathrnn/weights/**
 output/
 wandb/
 
 **/__pycache__
 **/.DS_Store
 .vscode/
+
+# Python virtual environment
+.venv/
+venv/
+
+# OMC operational state (committable skills under .omc/skills/** are excepted below)
+.omc/
+!.omc/skills/
+!.omc/skills/**
+
+# Runtime logs / pids / scratch
+*.pid
+train_restart.log
+train_restart.log.*
+train_restart.*.log
+_workspace/
+
+# Web app persistent video upload cache
+.video_cache/
+
+# Web app training log
+train_web.log
+# Dataset-specific training logs (train_osdar23.log, ...)
+train_*.log
+# Web app server log
+web_app.log
+
+# Bundled runtime binaries (e.g. unrar for the File Browser tab) — fetched per-host
+bin/
+overlay_clean_web.log
+
+# 발표자료 빌더가 남기는 pptx 압축 해제 작업물 (adapt_layout / fix_boxes / layout_catalog)
+_adapt/
+_fixboxes/
+krri_unpacked/
+*.orig_bak
+# 호스트별 디스크 사용량 메모
+.disk_root.txt
+figures/ieie_fit/

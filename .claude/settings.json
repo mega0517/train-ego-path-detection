@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(conda env *)",
+      "Bash(/usr/bin/python3 -c \"import torch; print\\(torch.__version__\\)\")",
+      "Bash(pip list *)",
+      "Bash(python3 -m pip list)",
+      "Bash(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv)",
+      "Bash(python3 -m pip --version)",
+      "Bash(python3 -c \"import venv; print\\('venv ok'\\)\")"
+    ]
+  }
+}

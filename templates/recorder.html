@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>화면 녹화 — TEP-Net Recorder</title>
+  <style>
+    :root { --bg:#e4e8ed; --panel:#f6f8fa; --border:#b9c0ca; --accent:#2e7d32;
+            --danger:#d32f2f; --text:#0f1720; --muted:#47505c; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:'Segoe UI','Malgun Gothic',sans-serif; background:var(--bg); color:var(--text); }
+    header { background:#1b262c; color:#fff; padding:12px 18px; font-size:17px; font-weight:600;
+             display:flex; align-items:center; gap:10px; }
+    header .badge { margin-left:auto; font-size:12px; font-weight:400; opacity:.85; }
+    .wrap { display:flex; gap:14px; padding:14px; max-width:1400px; margin:0 auto; }
+    .side { width:340px; flex-shrink:0; display:flex; flex-direction:column; gap:10px; }
+    .main { flex:1; min-width:0; display:flex; flex-direction:column; gap:10px; }
+    .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; }
+    .card h2 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+    label { display:block; font-size:13px; margin:6px 0 3px; }
+    select, input[type=text] { width:100%; padding:7px; border:1px solid var(--border); border-radius:6px; font-size:14px; }
+    .row { display:flex; gap:8px; align-items:center; }
+    .chk { display:flex; gap:6px; align-items:center; font-size:13px; margin:5px 0; cursor:pointer; }
+    .btn { width:100%; padding:11px; border:none; border-radius:6px; font-size:15px; font-weight:600;
+           color:#fff; cursor:pointer; margin-top:6px; }
+    .btn:disabled { opacity:.45; cursor:not-allowed; }
+    .btn.start { background:var(--accent); }
+    .btn.stop  { background:var(--danger); }
+    .btn.gray  { background:#607d8b; }
+    .btn.blue  { background:#1565c0; }
+    video { width:100%; background:#111; border-radius:8px; aspect-ratio:16/9; }
+    .status { font-size:13px; color:var(--muted); padding:8px 10px; background:var(--panel);
+              border:1px solid var(--border); border-radius:6px; }
+    .rec { display:inline-flex; align-items:center; gap:8px; font-weight:700; color:var(--danger); }
+    .rec .dot { width:12px; height:12px; border-radius:50%; background:var(--danger); animation:blink 1s infinite; }
+    @keyframes blink { 50% { opacity:.15; } }
+    .meta { display:flex; gap:14px; font-size:13px; color:var(--muted); }
+    .meta b { color:var(--text); font-size:16px; }
+    .info { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.45; }
+    @media (max-width:760px){ .wrap{flex-direction:column;} .side{width:100%;} }
+  </style>
+</head>
+<body>
+  <header>🎬 화면 녹화 <span style="font-weight:400;font-size:13px;">창·화면·탭 선택 녹화</span>
+    <span class="badge" id="supBadge"></span></header>
+  <div class="wrap">
+    <aside class="side">
+      <div class="card">
+        <h2>녹화 옵션</h2>
+        <label>프레임레이트</label>
+        <select id="fps"><option value="30" selected>30 fps</option><option value="60">60 fps</option><option value="15">15 fps</option></select>
+        <label>화질 (비트레이트)</label>
+        <select id="bitrate">
+          <option value="8000000">보통 — 8 Mbps</option>
+          <option value="16000000" selected>높음 — 16 Mbps</option>
+          <option value="30000000">최고 — 30 Mbps</option>
+        </select>
+        <label>코덱</label>
+        <select id="codec"></select>
+        <label class="chk"><input type="checkbox" id="sysAudio" checked /> 시스템 소리 포함 (화면·탭 공유 시)</label>
+        <label class="chk"><input type="checkbox" id="micAudio" /> 마이크 포함</label>
+        <div class="info">‘녹화 시작’을 누르면 브라우저가 <b>어떤 창/화면/탭을 녹화할지</b> 선택창을 띄웁니다.
+        창(window) 단위 녹화는 대부분의 환경에서 시스템 소리가 포함되지 않습니다 — 소리가 필요하면 ‘전체 화면’ 또는 ‘탭’을 선택하세요.</div>
+      </div>
+      <button class="btn start" id="startBtn">● 녹화 시작</button>
+      <div class="row">
+        <button class="btn gray" id="pauseBtn" disabled>⏸ 일시정지</button>
+        <button class="btn stop" id="stopBtn" disabled>■ 정지</button>
+      </div>
+      <div class="card" id="saveCard" style="display:none;">
+        <h2>저장</h2>
+        <label>파일 이름</label>
+        <input type="text" id="fname" />
+        <button class="btn blue" id="dlBtn">⬇ 내 PC에 다운로드 (WebM)</button>
+        <label class="chk"><input type="checkbox" id="toMp4" checked /> 서버 저장 시 MP4로 자동 변환 (H.264+AAC)</label>
+        <button class="btn gray" id="upBtn">🗄 서버에 저장 (datasets/Recordings)</button>
+        <div class="info" id="saveInfo"></div>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="status" id="statusLine">대기 중 — 옵션을 고르고 ‘녹화 시작’을 누르세요.</div>
+      <div class="card">
+        <div class="meta">
+          <span id="recFlag"></span>
+          <span>시간 <b id="tTime">00:00</b></span>
+          <span>용량 <b id="tSize">0 MB</b></span>
+          <span>해상도 <b id="tRes">—</b></span>
+        </div>
+      </div>
+      <video id="preview" autoplay muted playsinline></video>
+      <video id="playback" controls style="display:none;"></video>
+    </main>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let stream = null, mic = null, recorder = null, chunks = [], bytes = 0;
+    let t0 = 0, pausedAt = 0, pausedTotal = 0, timer = null, blob = null, mime = "";
+
+    // Codec options, filtered by what this browser's MediaRecorder supports.
+    const CODECS = [
+      ["video/webm;codecs=vp9,opus", "WebM · VP9 (권장)"],
+      ["video/webm;codecs=av01,opus", "WebM · AV1 (고압축)"],
+      ["video/webm;codecs=h264,opus", "WebM · H.264"],
+      ["video/webm;codecs=vp8,opus", "WebM · VP8 (호환)"],
+      ["video/mp4", "MP4 (Safari)"],
+    ];
+    for (const [v, label] of CODECS) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(v)) {
+        const o = document.createElement("option"); o.value = v; o.textContent = label;
+        $("codec").appendChild(o);
+      }
+    }
+    $("supBadge").textContent = (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)
+      ? "✓ 이 브라우저에서 사용 가능" : "✗ 미지원 브라우저 (Chrome/Edge 사용)";
+
+    function fmtT(ms) {
+      const s = Math.floor(ms / 1000);
+      return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+    }
+    function tick() {
+      $("tTime").textContent = fmtT(performance.now() - t0 - pausedTotal);
+      $("tSize").textContent = (bytes / 1048576).toFixed(1) + " MB";
+    }
+    function setStatus(t) { $("statusLine").textContent = t; }
+    function defaultName() {
+      const d = new Date(), p = (n) => String(n).padStart(2, "0");
+      const ext = mime.includes("mp4") ? "mp4" : "webm";
+      return `rec_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`;
+    }
+
+    $("startBtn").onclick = async () => {
+      try {
+        mime = $("codec").value || "video/webm";
+        const fps = parseInt($("fps").value, 10);
+        // The browser shows its own picker: 창 / 전체 화면 / 탭 중 선택.
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: { ideal: fps, max: 60 } },
+          audio: $("sysAudio").checked,
+        });
+        let tracks = [...stream.getVideoTracks(), ...stream.getAudioTracks()];
+        if ($("micAudio").checked) {  // mix mic with (optional) system audio
+          mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
+          if (stream.getAudioTracks().length) {
+            const ctx = new AudioContext();
+            const dst = ctx.createMediaStreamDestination();
+            ctx.createMediaStreamSource(new MediaStream(stream.getAudioTracks())).connect(dst);
+            ctx.createMediaStreamSource(mic).connect(dst);
+            tracks = [...stream.getVideoTracks(), ...dst.stream.getAudioTracks()];
+          } else {
+            tracks = [...stream.getVideoTracks(), ...mic.getAudioTracks()];
+          }
+        }
+        const rs = new MediaStream(tracks);
+        $("preview").style.display = ""; $("playback").style.display = "none";
+        $("preview").srcObject = rs;
+        const vs = stream.getVideoTracks()[0].getSettings();
+        $("tRes").textContent = `${vs.width}×${vs.height}`;
+
+        chunks = []; bytes = 0; blob = null;
+        recorder = new MediaRecorder(rs, { mimeType: mime,
+          videoBitsPerSecond: parseInt($("bitrate").value, 10) });
+        recorder.ondataavailable = (e) => { if (e.data.size) { chunks.push(e.data); bytes += e.data.size; } };
+        recorder.onstop = finish;
+        // If the user clicks the browser's own "공유 중지", stop the recording too.
+        stream.getVideoTracks()[0].onended = () => { if (recorder && recorder.state !== "inactive") recorder.stop(); };
+        recorder.start(1000);  // 1s chunks
+
+        t0 = performance.now(); pausedTotal = 0;
+        timer = setInterval(tick, 250);
+        $("recFlag").innerHTML = '<span class="rec"><span class="dot"></span>REC</span>';
+        $("startBtn").disabled = true; $("pauseBtn").disabled = false; $("stopBtn").disabled = false;
+        $("saveCard").style.display = "none";
+        setStatus(`녹화 중 — ${vs.width}×${vs.height} · ${fps}fps · ${$("codec").selectedOptions[0].textContent}`);
+      } catch (e) {
+        if (e.name !== "NotAllowedError") setStatus("시작 실패: " + e.message);
+        cleanup(false);
+      }
+    };
+
+    $("pauseBtn").onclick = () => {
+      if (!recorder) return;
+      if (recorder.state === "recording") {
+        recorder.pause(); pausedAt = performance.now();
+        $("pauseBtn").textContent = "▶ 재개"; $("recFlag").textContent = "⏸ 일시정지";
+        setStatus("일시정지됨");
+      } else if (recorder.state === "paused") {
+        recorder.resume(); pausedTotal += performance.now() - pausedAt;
+        $("pauseBtn").textContent = "⏸ 일시정지";
+        $("recFlag").innerHTML = '<span class="rec"><span class="dot"></span>REC</span>';
+        setStatus("녹화 중");
+      }
+    };
+
+    $("stopBtn").onclick = () => { if (recorder && recorder.state !== "inactive") recorder.stop(); };
+
+    function cleanup(keepPreview) {
+      if (timer) { clearInterval(timer); timer = null; }
+      if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+      if (mic) { mic.getTracks().forEach((t) => t.stop()); mic = null; }
+      if (!keepPreview) $("preview").srcObject = null;
+      $("startBtn").disabled = false; $("pauseBtn").disabled = true; $("stopBtn").disabled = true;
+      $("pauseBtn").textContent = "⏸ 일시정지"; $("recFlag").textContent = "";
+    }
+
+    function finish() {
+      tick();
+      blob = new Blob(chunks, { type: mime });
+      cleanup(false);
+      $("preview").style.display = "none";
+      const pb = $("playback");
+      pb.style.display = ""; pb.src = URL.createObjectURL(blob);
+      $("fname").value = defaultName();
+      $("saveCard").style.display = "";
+      $("saveInfo").textContent = "";
+      setStatus(`녹화 완료 — ${(blob.size / 1048576).toFixed(1)} MB. 아래에서 재생 확인 후 저장하세요.`);
+    }
+
+    $("dlBtn").onclick = () => {
+      if (!blob) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = $("fname").value.trim() || defaultName();
+      a.click();
+      $("saveInfo").textContent = "다운로드를 시작했습니다.";
+    };
+
+    $("upBtn").onclick = async () => {
+      if (!blob) return;
+      const name = $("fname").value.trim() || defaultName();
+      const conv = $("toMp4").checked;
+      $("upBtn").disabled = true;
+      $("saveInfo").textContent = conv
+        ? "서버 업로드 후 MP4 변환 중… (녹화 길이에 따라 수십 초~수 분)"
+        : "서버 업로드 중…";
+      try {
+        const fd = new FormData();
+        fd.append("file", blob, name);
+        fd.append("name", name);
+        fd.append("convert", conv ? "true" : "false");
+        const r = await (await fetch("/api/recorder/save", { method: "POST", body: fd })).json();
+        if (r.error) throw new Error(r.error);
+        const dl = `/api/fs/download?path=${encodeURIComponent(r.saved)}`;
+        $("saveInfo").innerHTML =
+          (r.warn ? `⚠ ${r.warn}<br>` : "") +
+          `저장 완료: ${r.saved}<br><a href="${dl}">⬇ ${r.mp4 ? "MP4" : "파일"} 다운로드</a>`;
+      } catch (e) {
+        $("saveInfo").textContent = "서버 저장 실패: " + e.message;
+      } finally { $("upBtn").disabled = false; }
+    };
+  </script>
+</body>
+</html>

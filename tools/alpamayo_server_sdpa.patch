@@ -1,0 +1,77 @@
+alpamayo 서버에 sdpa와 확산 스텝 수를 여는 패치
+================================================
+
+적용 대상: /data3/bhkim/workspace/alpamayo (git 저장소가 아니라 여기 둔다)
+적용 방법:
+    cd /data3/bhkim/workspace/alpamayo
+    patch -p1 < /data3/bhkim/workspace/train-ego-path-detection/tools/alpamayo_server_sdpa.patch
+
+무엇을 하나
+-----------
+1. --attn sdpa 가 실제로 먹게 한다. AlpamayoR1은 _supports_sdpa 를 선언하지
+   않고 transformers는 그 클래스 플래그만 보고 막으므로, sdpa를 요청해도 전부
+   조용히 eager로 떨어졌다. 하위 VLM은 Qwen3VLForConditionalGeneration이라
+   sdpa를 지원한다. 같은 시드로 대조했을 때 CoC는 동일했고 궤적 차이 0.03 m,
+   속도 1.17배였다.
+
+   flash_attention_2 는 열지 않는다. expert가 (b,1,n,seq) 조밀 float32 마스크를
+   받는데 flash varlen이 이를 처리하지 못해 rollout 중 cu_seqlens_q 에서 죽는다.
+
+2. 요청의 diffusion_steps 를 받아 flow matching 샘플러에 넘긴다. 기본 10스텝은
+   요청당 444 ms를 쓰는데, 5스텝이면 220 ms를 돌려주고 궤적은 0.18 m 움직인다.
+
+이 둘로 demo_cabview 요청 중앙값이 1467 ms에서 1072 ms가 됐다.
+
+주의
+----
+이 패치를 되돌려도 tools/alpamayo_run.py 는 계속 --attn sdpa 로 서버를 띄운다.
+패치 없이 그 인자를 주면 transformers가 거절하지 않고 조용히 eager로 돌아가므로,
+느려질 뿐 결과는 나온다.
+
+--- a/isaac_bridge/alpamayo_server.py
++++ b/isaac_bridge/alpamayo_server.py
+@@ -125,6 +125,20 @@
+             # override the config default (flash_attention_2) so the model
+             # loads without flash-attn installed (sdpa is numerically fine).
+             from transformers import AutoConfig
++
++            # AlpamayoR1 declares neither _supports_sdpa nor _supports_flash_attn,
++            # and transformers rejects any override on the class flag alone -- so
++            # every run so far fell back to eager. The flag is an omission for
++            # sdpa: the VLM underneath is Qwen3VLForConditionalGeneration, which
++            # supports it, and a same-seed comparison gave an identical CoC with
++            # 0.03 m of trajectory difference at 1.17x the speed.
++            #
++            # flash_attention_2 is a different story and stays shut: the expert
++            # is fed a dense (b,1,n,seq) float32 mask, which flash varlen cannot
++            # take, and it dies on cu_seqlens_q part-way through the rollout.
++            if attn == "sdpa":
++                AlpamayoR1._supports_sdpa = True
++
+             cfg = AutoConfig.from_pretrained(model_name)
+             cfg.attn_implementation = attn
+             for sub in ("vlm_cfg", "expert_cfg", "text_config", "vision_config"):
+@@ -184,6 +198,15 @@
+         }
+         model_inputs = helper.to_device(model_inputs, self.device)
+ 
++        # The flow-matching sampler defaults to 10 euler steps, and each one is a
++        # fresh pass of the 2B expert over 128 tokens -- 444 ms of a 1.27 s
++        # request. Halving them costs 0.18 m of trajectory, measured against the
++        # 10-step answer on the same seed, and returns 220 ms.
++        diff_kwargs = {}
++        steps = req.get("diffusion_steps")
++        if steps:
++            diff_kwargs["inference_step"] = int(steps)
++
+         t0 = time.time()
+         torch.cuda.manual_seed_all(42)
+         with torch.no_grad(), torch.autocast("cuda", dtype=self.dtype):
+@@ -195,6 +218,7 @@
+                 num_traj_sets=1,
+                 max_generation_length=int(req.get("max_generation_length", 256)),
+                 return_extra=True,
++                diffusion_kwargs=diff_kwargs,
+             )
+         infer_ms = (time.time() - t0) * 1000.0
+ 
